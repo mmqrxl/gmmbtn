@@ -3,86 +3,74 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Squeek of the Hill — hold the Golden Seed</title>
-  <meta name="description" content="A holder-only king-of-the-hill game for Squeek NFT holders. Hold the Golden Seed while the real hamster runs. Settled by SqueekCore on Sepolia." />
+  <title>Squeek Delve — a holder-only roguelike, verified onchain</title>
+  <meta name="description" content="A pixel roguelike for Squeek NFT holders. Every burrow is seeded by the real hamster's certified work on Sepolia, and every run is replayed and verified by the contract." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" />
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
-  <header>
-    <div class="brand"><span class="seed">🌰</span> Squeek of the Hill</div>
+  <header class="bar">
+    <div class="logo">SQUEEK<span>DELVE</span></div>
+    <div class="pill" id="wheel">wheel: …</div>
     <div class="right">
-      <span class="pill muted">Sepolia testnet</span>
-      <button id="connect">Connect wallet</button>
+      <button id="mute" class="px-btn tiny">♪</button>
+      <button id="connect" class="px-btn">CONNECT</button>
     </div>
   </header>
 
-  <main>
-    <section class="hero card">
-      <div class="king">
-        <div id="kingBadge" class="badge-slot"></div>
-        <div>
-          <div class="muted small">Keeper of the Golden Seed</div>
-          <h1 id="kingName">Nobody yet</h1>
-          <div id="kingMeta" class="muted"></div>
-          <div id="shield" class="shield"></div>
+  <main class="layout">
+    <section class="stage">
+      <div class="screen-wrap">
+        <canvas id="screen" width="720" height="576" tabindex="0" aria-label="Squeek Delve game screen"></canvas>
+        <div id="overlay" class="overlay hidden"></div>
+      </div>
+      <div class="controls">
+        <div class="pad">
+          <button class="px-btn" data-act="0" aria-label="Up">▲</button>
+          <button class="px-btn" data-act="3" aria-label="Left">◀</button>
+          <button class="px-btn" data-act="4" aria-label="Wait">·</button>
+          <button class="px-btn" data-act="1" aria-label="Right">▶</button>
+          <button class="px-btn" data-act="2" aria-label="Down">▼</button>
+        </div>
+        <div class="keys">
+          <button id="startBtn" class="px-btn gold">START RUN</button>
+          <p><b>WASD / ARROWS</b> move &amp; attack · <b>SPACE</b> wait · <b>Q</b> flee with your seeds</p>
+          <button class="px-btn tiny" data-act="5">FLEE</button>
         </div>
       </div>
-      <div class="live">
-        <div class="live-label">Wheel right now <small class="muted">(API, display only)</small></div>
-        <div id="liveStatus" class="live-status">…</div>
-        <div id="liveRpm" class="muted">…</div>
-        <div class="small muted" style="margin-top:8px">A reign earns from the <b>next</b> round. Seize when you think the hamster is about to run.</div>
-        <div class="small muted">Round <b id="curRound">…</b> · next in <b id="countdown">…</b> · certified through <b id="settled">…</b></div>
-      </div>
     </section>
 
-    <section class="grid">
-      <div class="card">
-        <h2>Your Squeeks</h2>
-        <div id="mySqueeks" class="squeeks muted">Connect a wallet holding Squeeks (wallet or staked).</div>
-        <div class="row">
-          <input id="manualId" type="number" min="1" max="9999" placeholder="Add a Squeek ID" />
-          <button id="addId" class="ghost">Add</button>
-        </div>
-        <button id="seize" class="primary" disabled>Pick a Squeek</button>
-        <div id="txStatus" class="small"></div>
+    <aside class="side">
+      <div class="panel">
+        <h3>DELVER</h3>
+        <div id="delver"></div>
+        <div id="panelStatus" class="small"></div>
       </div>
-
-      <div class="card rules">
-        <h2>Rules</h2>
-        <ol class="small">
-          <li>Only Squeek holders play. Staked Squeeks count too.</li>
-          <li>Seize the Seed with one Squeek. Your reign earns from the round <b>after</b> you seize, so nobody can claim work that already happened.</li>
-          <li>Every unit of real wheel work in your reign = 1 point for your Squeek, read from <code>SqueekCore</code> once the round is certified.</li>
-          <li>A level-<i>L</i> Squeek is shielded for <i>L</i> rounds. Higher levels hold longer.</li>
-          <li>A dethroned Squeek rests for 6 rounds (1 hour). You can't take the Seed from yourself.</li>
-          <li>Points stay with the Squeek, so they go with it if you sell it.</li>
-        </ol>
+      <div class="panel">
+        <h3 id="expTitle">EXPEDITION</h3>
+        <div id="expBody"></div>
       </div>
-    </section>
-
-    <section class="grid">
-      <div class="card">
-        <h2>Reigns</h2>
-        <div class="muted small">Anyone can credit a reign once SqueekCore certifies its rounds. Points always go to the reigning Squeek.</div>
-        <button id="creditAll" class="ghost" disabled>Nothing to credit</button>
-        <table>
-          <thead><tr><th>#</th><th>Squeek</th><th>Rounds</th><th>Points</th><th></th></tr></thead>
-          <tbody id="reigns"></tbody>
-        </table>
+      <div class="panel">
+        <h3>DEEPEST DELVERS</h3>
+        <div id="board" class="board"></div>
       </div>
-
-      <div class="card">
-        <h2>Hall of the Hill</h2>
-        <div id="board" class="board muted">…</div>
+      <div class="panel">
+        <h3>HOW IT WORKS</h3>
+        <ul class="small rules">
+          <li>Five floors of burrow. Grab seeds 🌰, eat cheese 🧀, bump enemies to fight, find the tunnel down. The golden wheel waits on floor 5.</li>
+          <li>Each expedition lasts 2 hours. Its burrow is seeded from SqueekCore's certified ledger, and the hamster's real work in the 6 rounds before it opened sets the mood: 💤 dark and drowsy, 🐾 normal, 🏃 richer seeds, ⚡ more enemies and double seeds.</li>
+          <li>Your Squeek is your delver. Its level sets HP and attack, its onchain art sets your colors.</li>
+          <li>Flee (Q) to keep every seed. Die and you lose half. Win for a big bonus.</li>
+          <li>Practice as much as you like. Each Squeek can submit 3 runs per expedition; the contract replays every move and keeps your best. Ties go to whoever got there first.</li>
+        </ul>
       </div>
-    </section>
+    </aside>
   </main>
 
-  <footer class="muted small">
-    Testnet only. No tokens, no money, just points earned by a real hamster. <span id="gameLink"></span>
-  </footer>
+  <footer class="muted small">Sepolia testnet only. No tokens, no money: just seeds, glory and a real hamster. <span id="gameLink"></span></footer>
 
-  <script type="module" src="./app.js"></script>
+  <script type="module" src="./game.js"></script>
 </body>
 </html>
