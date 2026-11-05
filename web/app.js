@@ -5,105 +5,97 @@ import { sepolia } from "https://esm.sh/viem@2.21.0/chains";
 import { GAME_ABI } from "./abi.js";
 import { GAME_ADDRESS, RPC_URL, API_BASE, EXPLORER } from "./config.js";
 
-const MOODS = [
-  { emoji: "💤", name: "Snooze", range: "0" },
-  { emoji: "🐾", name: "Potter", range: "1–99" },
-  { emoji: "🏃", name: "Jog", range: "100–299" },
-  { emoji: "⚡", name: "Zoomies", range: "300+" },
-];
-const HISTORY = 12;
-const PENDING_SCAN = 144;
+const REIGNS_SHOWN = 15;
+const params = new URLSearchParams(location.search);
+const qsGame = params.get("game");
+const game = isAddress(qsGame ?? "") ? getAddress(qsGame) : (isAddress(GAME_ADDRESS) ? getAddress(GAME_ADDRESS) : null);
+// ?rpc= is for local testing against an anvil fork.
+const pub = createPublicClient({ chain: sepolia, transport: http(params.get("rpc") || RPC_URL), batch: { multicall: true } });
+const read = (functionName, args = []) => pub.readContract({ address: game, abi: GAME_ABI, functionName, args });
+const CORE_STATE_ABI = [{
+  type: "function", name: "state", stateMutability: "view", inputs: [],
+  outputs: [{ type: "tuple", components: [
+    { name: "settledThroughRound", type: "uint64" }, { name: "cumulativeWork", type: "uint64" },
+    { name: "cumulativeBlockUnits", type: "uint96" }, { name: "blockHeight", type: "uint64" },
+    { name: "blockProgress", type: "uint96" }, { name: "workPerThousandBlocks", type: "uint32" },
+    { name: "authorizationNonce", type: "uint256" }, { name: "paused", type: "bool" }] }],
+}];
 
 const $ = (id) => document.getElementById(id);
-const qsGame = new URLSearchParams(location.search).get("game");
-const game = isAddress(qsGame ?? "") ? getAddress(qsGame) : (isAddress(GAME_ADDRESS) ? getAddress(GAME_ADDRESS) : null);
-
-// ?rpc= is for local testing against an anvil fork.
-const qsRpc = new URLSearchParams(location.search).get("rpc");
-const pub = createPublicClient({ chain: sepolia, transport: http(qsRpc || RPC_URL), batch: { multicall: true } });
-const read = (functionName, args = []) => pub.readContract({ address: game, abi: GAME_ABI, functionName, args });
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+const short = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`;
+const txLink = (h) => `<a target="_blank" rel="noopener" href="${EXPLORER}/tx/${h}">${h.slice(0, 10)}…</a>`;
+const mmss = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+const setStatus = (html, cls = "") => { $("txStatus").innerHTML = `<span class="${cls}">${html}</span>`; };
 
 const state = {
-  account: null, wallet: null,
-  genesis: 0n, duration: 600n, current: 0n, settled: 0n,
-  target: 0n, mood: null,
-  squeeks: new Map(), // id(bigint) -> { ok: bool, level }
-  selected: new Set(),
+  account: null, wallet: null, core: null,
+  genesis: 0n, duration: 600n, settled: 0n,
+  king: null, // { id, reign }
+  squeeks: new Map(), // id -> { ok, restUntil }
+  selected: null,
+  creditable: [],
 };
 
-function setStatus(html, cls = "") { $("txStatus").innerHTML = `<span class="${cls}">${html}</span>`; }
-const txLink = (h) => `<a target="_blank" rel="noopener" href="${EXPLORER}/tx/${h}">${h.slice(0, 10)}…</a>`;
-const esc = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+const nowSec = () => BigInt(Math.floor(Date.now() / 1000));
+const nowRound = () => (nowSec() < state.genesis ? 0n : (nowSec() - state.genesis) / state.duration + 1n);
+const roundStart = (r) => state.genesis + (r - 1n) * state.duration;
+
+// Badges are only ever rendered as <img>, never as inline SVG markup.
+function badgeImg(uri) {
+  try {
+    const json = JSON.parse(atob(uri.split(",")[1]));
+    if (typeof json.image !== "string" || !json.image.startsWith("data:image/svg+xml;base64,")) return null;
+    const img = new Image(); img.src = json.image; img.alt = String(json.name ?? "badge");
+    return img;
+  } catch { return null; }
+}
 
 // ---------- live wheel (API, display only) ----------
 async function pollLive() {
   try {
-    const r = await fetch(`${API_BASE}/v1/status`, { headers: { accept: "application/json" } });
-    const s = await r.json();
+    const s = await (await fetch(`${API_BASE}/v1/status`, { headers: { accept: "application/json" } })).json();
     const m = s.measurement ?? {};
     if (m.freshness !== "online") {
       $("liveStatus").textContent = "Unknown";
       $("liveRpm").textContent = `feed ${m.freshness ?? "unavailable"}`;
-    } else {
-      const spinning = m.coreStatus && m.coreStatus !== "IDLE";
-      $("liveStatus").textContent = spinning ? "🏃 Spinning" : "💤 Idle";
-      $("liveRpm").textContent = `${((m.rpmMilli ?? 0) / 1000).toFixed(1)} rpm · ${((m.speedMmPerSecond ?? 0) / 1000).toFixed(2)} m/s`;
+      return;
     }
+    const spinning = m.coreStatus && m.coreStatus !== "IDLE";
+    $("liveStatus").textContent = spinning ? "🏃 Running" : "💤 Idle";
+    $("liveRpm").textContent = `${((m.rpmMilli ?? 0) / 1000).toFixed(1)} rpm · ${((m.speedMmPerSecond ?? 0) / 1000).toFixed(2)} m/s`;
   } catch { $("liveStatus").textContent = "Unknown"; $("liveRpm").textContent = "API unreachable"; }
 }
 
-// ---------- rounds ----------
-function nowRound() {
-  const t = BigInt(Math.floor(Date.now() / 1000));
-  return t < state.genesis ? 0n : (t - state.genesis) / state.duration + 1n;
-}
-
-function tickCountdown() {
+// ---------- the hill ----------
+function tick() {
   const cur = nowRound();
-  if (cur !== state.current) { state.current = cur; if (state.target <= cur) state.target = cur + 1n; renderTabs(); refreshRound(); }
-  const nextStart = Number(state.genesis + cur * state.duration);
-  const left = Math.max(0, nextStart - Math.floor(Date.now() / 1000));
   $("curRound").textContent = cur.toString();
-  $("countdown").textContent = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`;
-}
-
-function renderTabs() {
-  const el = $("roundTabs"); el.innerHTML = "";
-  for (let i = 1n; i <= 6n; i++) {
-    const r = state.current + i;
-    const b = document.createElement("button");
-    b.textContent = i === 1n ? `#${r} (next)` : `#${r}`;
-    b.className = r === state.target ? "on" : "";
-    b.onclick = () => { state.target = r; renderTabs(); refreshRound(); };
-    el.append(b);
+  $("countdown").textContent = mmss(Number(roundStart(cur + 1n) - nowSec()));
+  const el = $("shield");
+  if (!state.king) { el.className = "shield open"; el.textContent = "The Seed is unclaimed. Take it!"; return; }
+  const until = state.king.reign.shieldUntilRound;
+  if (cur >= until) {
+    el.className = "shield open"; el.textContent = "🔓 Open: anyone can seize now";
+  } else {
+    el.className = "shield locked";
+    el.textContent = `🛡️ Shielded until round ${until} (${mmss(Number(roundStart(until) - nowSec()))})`;
   }
+  updateSeizeBtn();
 }
 
-async function refreshRound() {
-  const round = await read("getRound", [state.target]);
-  const counts = round.counts.map(Number);
-  const total = Number(round.total);
-  const el = $("moods"); el.innerHTML = "";
-  MOODS.forEach((m, i) => {
-    const b = document.createElement("button");
-    // If you join this mood, your call is counted too.
-    const mult = ((total + 1) / (counts[i] + 1)).toFixed(2);
-    b.innerHTML = `<span class="emoji">${m.emoji}</span><b>${m.name}</b><span class="small muted">${m.range} work</span><span class="small">${counts[i]} calls</span><span class="mult">×${mult} if right</span>`;
-    b.className = state.mood === i ? "on" : "";
-    b.onclick = () => { state.mood = i; refreshRound(); updatePredictBtn(); };
-    el.append(b);
-  });
-  await refreshMyPicks();
-}
-
-async function refreshMyPicks() {
-  const ids = [...state.squeeks.keys()];
-  if (!ids.length) return;
-  const picks = await read("getPicks", [state.target, ids]);
-  ids.forEach((id, i) => {
-    const chip = document.querySelector(`[data-id="${id}"] .pick`);
-    if (chip) chip.textContent = picks[i].moodPlusOne ? ` ${MOODS[picks[i].moodPlusOne - 1].emoji}` : "";
-  });
+async function refreshKing() {
+  const n = await read("reignCount");
+  if (n === 0n) { state.king = null; $("kingName").textContent = "Nobody yet"; $("kingMeta").textContent = ""; $("kingBadge").innerHTML = ""; return; }
+  const id = n - 1n;
+  const reign = await read("reign", [id]);
+  state.king = { id, reign };
+  const [s, uri] = await Promise.all([read("squeek", [reign.tokenId]), read("badgeURI", [reign.tokenId])]);
+  $("kingName").textContent = `Squeek #${reign.tokenId}`;
+  $("kingMeta").innerHTML = `Level ${reign.level} · held by ${short(reign.seizer)} · reigning since round ${reign.startRound}<br>`
+    + `This reign: <b>${reign.work}</b> pts credited (through round ${reign.creditedThrough}) · lifetime ${s.points} pts`;
+  const img = badgeImg(uri);
+  $("kingBadge").replaceChildren(...(img ? [img] : []));
 }
 
 // ---------- wallet + squeeks ----------
@@ -112,17 +104,17 @@ async function connect() {
   const wallet = createWalletClient({ chain: sepolia, transport: custom(window.ethereum) });
   const [account] = await wallet.requestAddresses();
   try { await wallet.switchChain({ id: sepolia.id }); } catch {
-    try { await wallet.addChain({ chain: sepolia }); } catch { /* user declined */ }
+    try { await wallet.addChain({ chain: sepolia }); } catch { /* declined */ }
   }
   state.wallet = wallet; state.account = getAddress(account);
-  $("connect").textContent = `${account.slice(0, 6)}…${account.slice(-4)}`;
+  $("connect").textContent = short(account);
   window.ethereum.on?.("accountsChanged", () => location.reload());
   window.ethereum.on?.("chainChanged", () => location.reload());
   await loadSqueeks();
 }
 
 async function loadSqueeks() {
-  // The API only suggests which Squeeks to check; eligibility is read from the contract.
+  // The API only suggests IDs; eligibility is always read from the contract.
   const ids = [];
   try {
     let cursor = null;
@@ -133,132 +125,139 @@ async function loadSqueeks() {
       page.tokens.forEach((t) => ids.push(BigInt(t.tokenId)));
       cursor = page.nextCursor;
     } while (cursor);
-  } catch { /* fall back to manual IDs */ }
-  for (const id of ids) await addSqueek(id, false);
+  } catch { /* manual IDs still work */ }
+  await Promise.all(ids.map((id) => addSqueek(id, false)));
   renderSqueeks();
-  refreshMyPicks(); refreshHistory();
 }
 
 async function addSqueek(id, render = true) {
   if (id < 1n || id > 9999n || state.squeeks.has(id)) return;
-  const ok = state.account ? await read("canPlay", [state.account, id]) : false;
-  state.squeeks.set(id, { ok });
-  if (ok) state.selected.add(id);
-  if (render) { renderSqueeks(); refreshMyPicks(); refreshHistory(); }
+  const [ok, s] = await Promise.all([
+    state.account ? read("canPlay", [state.account, id]) : false,
+    read("squeek", [id]),
+  ]);
+  state.squeeks.set(id, { ok, restUntil: s.restUntilRound, points: s.points });
+  if (render) renderSqueeks();
+}
+
+async function refreshSqueekStats() {
+  const ids = [...state.squeeks.keys()];
+  const stats = await Promise.all(ids.map((id) => read("squeek", [id])));
+  ids.forEach((id, i) => Object.assign(state.squeeks.get(id), { restUntil: stats[i].restUntilRound, points: stats[i].points }));
+  renderSqueeks();
 }
 
 function renderSqueeks() {
-  const el = $("mySqueeks"); el.innerHTML = ""; el.classList.remove("muted");
-  if (!state.squeeks.size) { el.classList.add("muted"); el.textContent = "No Squeeks found for this wallet. Add an ID manually if you hold one."; }
-  for (const [id, s] of state.squeeks) {
+  const el = $("mySqueeks"); el.replaceChildren(); el.classList.remove("muted");
+  if (!state.squeeks.size) { el.classList.add("muted"); el.textContent = "No Squeeks found for this wallet. Add an ID if you hold one."; }
+  const cur = nowRound();
+  const sorted = [...state.squeeks.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1));
+  for (const [id, s] of sorted) {
     const c = document.createElement("span");
-    c.dataset.id = id.toString();
-    c.className = `chip ${!s.ok ? "bad" : state.selected.has(id) ? "on" : ""}`;
-    c.innerHTML = `#${id}<span class="pick"></span>`;
-    c.title = s.ok ? "Click to toggle" : "Not held by this wallet (wallet or staked)";
-    if (s.ok) c.onclick = () => { state.selected.has(id) ? state.selected.delete(id) : state.selected.add(id); renderSqueeks(); refreshMyPicks(); updatePredictBtn(); };
+    const isKing = state.king && state.king.reign.tokenId === id;
+    const resting = cur < s.restUntil;
+    const usable = s.ok && !resting && !isKing;
+    c.className = `chip ${!usable ? "bad" : state.selected === id ? "on" : ""}`;
+    const tag = !s.ok ? "not yours" : isKing ? "👑 king" : resting ? `resting → r${s.restUntil}` : `${s.points} pts`;
+    c.innerHTML = `#${id}<span class="tag">${esc(tag)}</span>`;
+    if (usable) c.onclick = () => { state.selected = state.selected === id ? null : id; renderSqueeks(); };
     el.append(c);
   }
-  updatePredictBtn();
+  updateSeizeBtn();
 }
 
-function updatePredictBtn() {
-  $("predict").disabled = !(game && state.account && state.mood !== null && state.selected.size);
-  $("predict").textContent = state.mood === null ? "Pick a mood" :
-    `Call ${MOODS[state.mood].emoji} ${MOODS[state.mood].name} for round #${state.target} with ${state.selected.size} Squeek(s)`;
+function kingIsMine() {
+  if (!state.king || !state.account) return false;
+  if (state.king.reign.seizer === state.account) return true;
+  const mine = state.squeeks.get(state.king.reign.tokenId);
+  return Boolean(mine?.ok);
+}
+
+function updateSeizeBtn() {
+  const b = $("seize");
+  const shielded = state.king && nowRound() < state.king.reign.shieldUntilRound;
+  let label = `Seize the Seed with #${state.selected}`;
+  let ok = Boolean(game && state.account && state.selected);
+  if (!state.account) { label = "Connect a wallet"; ok = false; }
+  else if (kingIsMine()) { label = "You hold the Seed 👑"; ok = false; }
+  else if (!state.selected) { label = "Pick a Squeek"; ok = false; }
+  else if (shielded) { label = `Shielded until round ${state.king.reign.shieldUntilRound}`; ok = false; }
+  b.textContent = label; b.disabled = !ok;
 }
 
 async function send(functionName, args, label) {
   try {
-    setStatus(`Simulating ${label}…`);
+    setStatus(`Simulating ${esc(label)}…`);
     const { request } = await pub.simulateContract({ address: game, abi: GAME_ABI, functionName, args, account: state.account });
     setStatus("Confirm in your wallet…");
     const hash = await state.wallet.writeContract(request);
     setStatus(`Sent ${txLink(hash)} · waiting…`);
     const rc = await pub.waitForTransactionReceipt({ hash });
-    setStatus(rc.status === "success" ? `✅ ${label} confirmed ${txLink(hash)}` : `Reverted ${txLink(hash)}`, rc.status === "success" ? "win" : "lose");
-    return rc.status === "success";
+    const good = rc.status === "success";
+    setStatus(good ? `✅ ${esc(label)} confirmed ${txLink(hash)}` : `Reverted ${txLink(hash)}`, good ? "win" : "lose");
+    return good;
   } catch (e) {
     setStatus(esc(e.shortMessage ?? e.message), "lose");
     return false;
   }
 }
 
-async function predict() {
-  const ids = [...state.selected];
-  if (await send("predict", [ids, state.target, state.mood], "Call")) refreshRound();
+async function seize() {
+  const id = state.selected;
+  if (await send("seize", [id], `Seize with #${id}`)) {
+    state.selected = null;
+    await refreshAll();
+  }
 }
 
-// ---------- history + scoring ----------
-async function refreshHistory() {
-  const tb = $("history"); tb.innerHTML = "";
-  const mine = [...state.squeeks.entries()].filter(([, s]) => s.ok).map(([id]) => id);
-  const pending = [];
-  const from = state.settled > BigInt(PENDING_SCAN) ? state.settled - BigInt(PENDING_SCAN) + 1n : 1n;
-  const rounds = [];
-  for (let r = state.settled; r >= from; r--) rounds.push(r);
-  const books = await Promise.all(rounds.map((r) => read("getRound", [r])));
-  const picks = mine.length ? await Promise.all(rounds.map((r) => read("getPicks", [r, mine]))) : rounds.map(() => []);
-
-  rounds.forEach((r, i) => {
-    const b = books[i];
-    const my = picks[i].map((p, j) => ({ id: mine[j], p })).filter((x) => x.p.moodPlusOne);
-    const unscored = my.filter((x) => !x.p.scored).map((x) => x.id);
-    if (unscored.length) pending.push({ round: r, ids: unscored });
-    if (i >= HISTORY && !my.length) return;
+// ---------- reigns + board ----------
+async function refreshReigns() {
+  const [ids, list] = await read("recentReigns", [BigInt(REIGNS_SHOWN)]);
+  const flags = await Promise.all(ids.map((id) => read("creditable", [id])));
+  state.creditable = ids.filter((_, i) => flags[i]);
+  const tb = $("reigns"); tb.replaceChildren();
+  list.forEach((r, i) => {
     const tr = document.createElement("tr");
-    const outcome = b.resolved ? `${MOODS[b.outcome].emoji} ${MOODS[b.outcome].name}` : `<button class="ghost settle" data-round="${r}">Settle</button>`;
-    const mineHtml = my.map((x) => {
-      const m = x.p.moodPlusOne - 1;
-      const cls = !b.resolved ? "" : m === b.outcome ? "win" : "lose";
-      return `<span class="${cls}">#${x.id}${MOODS[m].emoji}</span>`;
-    }).join(" ");
-    tr.innerHTML = `<td>#${r}</td><td>${b.resolved ? b.work : "?"}</td><td>${outcome}</td><td>${b.total}</td><td>${mineHtml}</td>`;
+    const end = r.endRound === 0n ? "now" : r.endRound.toString();
+    const pending = r.endRound === 0n ? r.creditedThrough < nowRound() : r.creditedThrough < r.endRound;
+    tr.innerHTML = `<td>${ids[i]}</td><td>#${r.tokenId} <span class="muted small">L${r.level}</span>${r.endRound === 0n ? " 👑" : ""}</td>`
+      + `<td>${r.startRound}–${end}</td><td>${r.work}${pending ? '<span class="muted small"> +?</span>' : ""}</td><td></td>`;
+    if (flags[i]) {
+      const b = document.createElement("button");
+      b.className = "ghost settle"; b.textContent = "Credit";
+      b.disabled = !state.account;
+      b.onclick = async () => { if (await send("credit", [ids[i]], `Credit reign ${ids[i]}`)) refreshAll(); };
+      tr.lastChild.append(b);
+    }
     tb.append(tr);
   });
-  tb.querySelectorAll(".settle").forEach((btn) => {
-    btn.disabled = !state.account;
-    btn.title = state.account ? "Read this round's work from SqueekCore" : "Connect a wallet to settle";
-    btn.onclick = async () => { if (await send("resolve", [BigInt(btn.dataset.round)], `Settle round #${btn.dataset.round}`)) refreshHistory(); };
-  });
-  state.pending = pending;
-  $("scoreAll").disabled = !(state.account && pending.length);
-  $("scoreAll").textContent = pending.length ? `Score my pending calls (${pending.length} round${pending.length > 1 ? "s" : ""})` : "No pending calls";
+  const btn = $("creditAll");
+  btn.disabled = !(state.account && state.creditable.length);
+  btn.textContent = state.creditable.length ? `Credit all certified work (${state.creditable.length})` : "Nothing to credit";
 }
 
-async function scoreAll() {
-  // One transaction per round; each resolves the round first if nobody has.
-  for (const { round, ids } of state.pending ?? []) {
-    if (!(await send("score", [round, ids], `Score round #${round}`))) break;
-  }
-  refreshHistory(); refreshBoard();
+async function creditAll() {
+  if (await send("creditMany", [state.creditable], "Credit reigns")) refreshAll();
 }
 
 async function refreshBoard() {
   const [ids] = await read("leaderboard");
   const el = $("board");
-  if (!ids.length) { el.textContent = "No points yet — be the first seer on the board."; return; }
-  el.innerHTML = ""; el.classList.remove("muted");
+  if (!ids.length) { el.classList.add("muted"); el.textContent = "No points yet. The first king writes the first line."; return; }
+  el.classList.remove("muted");
   const uris = await Promise.all(ids.map((id) => read("badgeURI", [id])));
-  uris.forEach((u) => {
-    try {
-      const json = JSON.parse(atob(u.split(",")[1]));
-      // Only ever render the badge as an <img>, never inline its SVG.
-      if (typeof json.image === "string" && json.image.startsWith("data:image/svg+xml;base64,")) {
-        const img = new Image(); img.src = json.image; img.alt = json.name; el.append(img);
-      }
-    } catch { /* skip malformed */ }
-  });
+  el.replaceChildren(...uris.map(badgeImg).filter(Boolean));
 }
 
-async function refreshChain() {
-  const [settled] = await Promise.all([
-    pub.readContract({ address: await read("core"), abi: [{ type: "function", name: "state", stateMutability: "view", inputs: [], outputs: [{ type: "tuple", components: [{ name: "settledThroughRound", type: "uint64" }, { name: "cumulativeWork", type: "uint64" }, { name: "cumulativeBlockUnits", type: "uint96" }, { name: "blockHeight", type: "uint64" }, { name: "blockProgress", type: "uint96" }, { name: "workPerThousandBlocks", type: "uint32" }, { name: "authorizationNonce", type: "uint256" }, { name: "paused", type: "bool" }] }] }], functionName: "state" }).then((s) => s.settledThroughRound),
-  ]);
-  const changed = settled !== state.settled;
-  state.settled = settled;
-  $("settled").textContent = settled.toString();
-  if (changed) { refreshHistory(); refreshBoard(); }
+async function refreshSettled() {
+  const s = await pub.readContract({ address: state.core, abi: CORE_STATE_ABI, functionName: "state" });
+  state.settled = s.settledThroughRound;
+  $("settled").textContent = state.settled.toString();
+}
+
+async function refreshAll() {
+  await Promise.all([refreshSettled(), refreshKing()]);
+  await Promise.all([refreshReigns(), refreshBoard(), refreshSqueekStats()]);
 }
 
 // ---------- boot ----------
@@ -269,15 +268,14 @@ async function boot() {
     $("connect").disabled = true;
     return;
   }
-  $("gameLink").innerHTML = `Contract <a target="_blank" rel="noopener" href="${EXPLORER}/address/${game}">${game.slice(0, 10)}…</a>`;
-  [state.genesis, state.duration] = await Promise.all([read("genesisTimestamp"), read("roundDuration")]);
-  state.current = nowRound(); state.target = state.current + 1n;
-  renderTabs(); tickCountdown(); setInterval(tickCountdown, 1000);
-  await refreshChain(); setInterval(refreshChain, 30000);
-  refreshRound(); setInterval(refreshRound, 20000);
+  $("gameLink").innerHTML = `Contract <a target="_blank" rel="noopener" href="${EXPLORER}/address/${game}">${short(game)}</a>`;
+  [state.genesis, state.duration, state.core] = await Promise.all([read("genesisTimestamp"), read("roundDuration"), read("core")]);
+  await refreshAll();
+  tick(); setInterval(tick, 1000);
+  setInterval(refreshAll, 30000);
   $("connect").onclick = connect;
-  $("predict").onclick = predict;
-  $("scoreAll").onclick = scoreAll;
+  $("seize").onclick = seize;
+  $("creditAll").onclick = creditAll;
   $("addId").onclick = () => { const v = $("manualId").value; if (v) addSqueek(BigInt(v)); $("manualId").value = ""; };
 }
 boot().catch((e) => setStatus(esc(e.shortMessage ?? e.message), "lose"));

@@ -1,44 +1,43 @@
-# Squeek Seers 🐹◎
+# Squeek of the Hill 🌰
 
-**A holder-only, fully onchain prediction league for Squeek NFT holders on Sepolia.**
+**A holder-only king-of-the-hill game for Squeek NFT holders, settled entirely onchain on Sepolia.**
 
-Every Squeek you hold is a *seer*. Call Squeektoshi's mood for an upcoming 10-minute round.
-When SqueekCore certifies that round, the game contract reads the real wheel work straight from
-`SqueekCore.roundPage` and pays points to the Squeeks that called it. No oracle, no server, no admin key.
+There is one Golden Seed. Any Squeek holder can seize it. While your Squeek holds the Seed, every
+unit of real wheel work Squeektoshi the hamster logs becomes a point for that Squeek. The points are
+read straight from SqueekCore's certified round ledger, with no oracle, server or admin key.
 
-| Mood | Work in the round |
-|---|---|
-| 💤 Snooze | 0 |
-| 🐾 Potter | 1–99 |
-| 🏃 Jog | 100–299 |
-| ⚡ Zoomies | 300+ |
+The skill is timing: watch the live wheel, guess when the hamster is about to run, and take the
+hill right before he does.
 
 ## Rules
 
-- **Holders only.** `predict` checks `SqueekNFT.ownerOf` live; Squeeks deposited in SqueekStaking play
-  too (via `SqueekStaking.depositor`), so staking doesn't cost you your seat.
-- **No peeking.** A round can be called from the next round up to 144 rounds (24 h) ahead, and calls
-  lock when the round starts, before any of its work exists. You can change a call until then.
-- **Settled by the chain.** `resolve(round)` is permissionless and only works once
-  `round <= SqueekCore.state().settledThroughRound`. Work = `roundPage(r,r,0).end.cumulativeWork − roundPage(r−1,r−1,0).end.cumulativeWork`.
-- **Contrarians win big.** Points = `100 × (total calls ÷ correct calls) × level`. The hamster sleeps
-  most rounds, so calling the zoomies right is worth far more than calling another nap.
-- **Level matters.** A Squeek's level is locked in when it makes the call, so merged Squeeks score more.
-- **Reputation lives on the Squeek.** Points, wins, streaks and the top-10 leaderboard are keyed by
-  tokenId. Sell the Squeek and its record goes with it. Anyone can `score` anyone; points always go to
-  the Squeek.
-- **Onchain badge.** `badgeURI(tokenId)` returns a JSON + SVG data URI: a wheel that spins faster the
-  more accurate the seer is, with its title (Wheel Watcher → Hamster Prophet), points and rank.
+1. **Holders only.** `seize` checks `SqueekNFT.ownerOf` live. Squeeks deposited in SqueekStaking
+   count too (via `SqueekStaking.depositor`).
+2. **No claiming the past.** A reign seized in round *R* earns from round *R+1* on, so work that has
+   already happened can never be claimed.
+3. **Real work = points.** 1 work unit in a reign's rounds = 1 point, computed as
+   `roundPage(b,b,0).end.cumulativeWork − roundPage(a,a,0).end.cumulativeWork`, only for rounds up
+   to `SqueekCore.state().settledThroughRound`.
+4. **Level is armor.** A level-*L* Squeek is shielded for *L* rounds after its reign starts
+   (Squeek levels go 1–10, from merges).
+5. **Fall and rest.** A dethroned Squeek rests for 6 rounds (1 hour). You can't take the Seed from
+   yourself, even with another of your Squeeks.
+6. **Permissionless crediting.** Anyone can call `credit(reignId)` / `creditMany` as rounds get
+   certified, including on the current reign. Points always go to the reigning Squeek.
+7. **Reputation lives on the Squeek.** Points, reigns, rounds held, best reign and the top-10
+   Hall of the Hill are keyed by tokenId, so they move with the NFT.
+8. **Onchain badge.** `badgeURI(tokenId)` returns a JSON + SVG data URI: the hill grows with
+   points, and the Golden Seed glows on the current king's badge.
 
 ## Layout
 
 ```
-src/SqueekSeers.sol            game contract
-src/SeerBadge.sol              onchain SVG badge
+src/SqueekOfTheHill.sol          game contract
+src/HillBadge.sol                onchain SVG badge
 src/interfaces/ISqueekchain.sol  views of SqueekCore / SqueekNFT / SqueekStaking (published ABIs)
-test/                          unit tests (mocks) + fork tests against live Sepolia
-script/Deploy.s.sol            Sepolia deployment
-web/                           static dApp (no build step; viem from CDN)
+test/                            unit tests (mocks) + fork tests against live Sepolia
+script/Deploy.s.sol              Sepolia deployment
+web/                             static dApp (no build step; viem from CDN)
 ```
 
 Squeekchain addresses come from the published deployment record
@@ -54,19 +53,20 @@ SEPOLIA_RPC_URL=https://ethereum-sepolia-rpc.publicnode.com forge test --match-c
 
 ## Deploy
 
+Deployment needs about 33M gas on Sepolia (measured with `eth_estimateGas`), so have some Sepolia ETH.
+
 ```sh
 cast wallet import deployer --interactive               # once; keeps the key in an encrypted keystore
 forge script script/Deploy.s.sol --rpc-url $SEPOLIA_RPC_URL --account deployer --broadcast
 ```
 
 Put the printed address in `web/config.js` (`GAME_ADDRESS`), then host `web/` on any static host
-(GitHub Pages, Vercel, Netlify). You can also open the page with `?game=0x…`.
+(GitHub Pages, Vercel, Netlify, IPFS). You can also open the page with `?game=0x…`.
 After a contract change, regenerate the ABI:
 
 ```sh
-forge build && (echo "// Generated from out/SqueekSeers.sol/SqueekSeers.json (forge build). Do not edit."; \
-  echo -n "export const GAME_ABI = "; jq -c .abi out/SqueekSeers.sol/SqueekSeers.json; echo ";") > web/abi.js
+forge build && (echo "// Generated from out/SqueekOfTheHill.sol/SqueekOfTheHill.json (forge build). Do not edit."; \
+  echo -n "export const GAME_ABI = "; jq -c .abi out/SqueekOfTheHill.sol/SqueekOfTheHill.json; echo ";") > web/abi.js
 ```
 
-Testnet only: Squeeks and $SQK on Sepolia have no monetary value, and the game has no money in it,
-only points.
+Testnet only: Squeeks on Sepolia have no monetary value, and the game has no money in it, only points.
