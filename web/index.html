@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Squeek Seers — call the hamster's mood</title>
+  <meta name="description" content="A holder-only, fully onchain prediction league for Squeek NFT holders. Settled by SqueekCore on Sepolia." />
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <header>
+    <div class="brand"><span class="wheel">◎</span> Squeek Seers</div>
+    <div class="right">
+      <span id="net" class="pill muted">Sepolia</span>
+      <button id="connect">Connect wallet</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero card">
+      <div>
+        <h1>Read the hamster. Call the round.</h1>
+        <p>Every Squeek you hold is a <b>seer</b>. Call Squeektoshi's mood for an upcoming 10-minute round.
+          When SqueekCore certifies the round on Sepolia, the contract reads the real work and pays points to the
+          Squeeks that called it. Fewer correct callers = bigger multiplier. Higher level = more points.
+          No oracle, no server, no admin.</p>
+      </div>
+      <div class="live">
+        <div class="live-label">Wheel right now <small>(API, display only)</small></div>
+        <div id="liveStatus" class="live-status">…</div>
+        <div id="liveRpm" class="muted">…</div>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="card">
+        <h2>1 · Pick a round</h2>
+        <div class="muted">Current round <b id="curRound">…</b> · next locks in <b id="countdown">…</b></div>
+        <div id="roundTabs" class="tabs"></div>
+        <h2>2 · Call the mood</h2>
+        <div id="moods" class="moods"></div>
+        <div class="muted small">Multiplier if right = total calls ÷ correct calls, × your Squeek's level. Calls can be changed until the round starts.</div>
+      </div>
+
+      <div class="card">
+        <h2>3 · Your seers</h2>
+        <div id="mySqueeks" class="squeeks muted">Connect a wallet holding Squeeks (wallet or staked).</div>
+        <div class="row">
+          <input id="manualId" type="number" min="1" max="9999" placeholder="Add Squeek ID" />
+          <button id="addId" class="ghost">Add</button>
+        </div>
+        <button id="predict" class="primary" disabled>Lock in call</button>
+        <div id="txStatus" class="small"></div>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="card">
+        <h2>Settled rounds</h2>
+        <div class="muted small">Certified by SqueekCore through round <b id="settled">…</b>. Anyone can settle; points go to the Squeek.</div>
+        <button id="scoreAll" class="ghost" disabled>Score my pending calls</button>
+        <table>
+          <thead><tr><th>Round</th><th>Work</th><th>Mood</th><th>Calls</th><th>Mine</th></tr></thead>
+          <tbody id="history"></tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <h2>Seer leaderboard</h2>
+        <div id="board" class="board muted">…</div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="muted small">
+    Testnet only. Moods: 💤 0 work · 🐾 1–99 · 🏃 100–299 · ⚡ 300+ per round, read from
+    <code>SqueekCore.roundPage</code>. <span id="gameLink"></span>
+  </footer>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
