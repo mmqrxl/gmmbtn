@@ -6,13 +6,13 @@ import {DelveRules} from "../../src/DelveRules.sol";
 /// @dev Rules stand-in for SqueekDelve unit tests: each tape byte descends one floor and adds its
 ///      value as seeds; 0xFF kills the delver, 0xFE flees. Real rules are covered by the parity tests.
 contract MockRules is DelveRules {
-    function advance(uint32, uint8, Progress calldata start, bytes calldata tape)
+    function advance(uint32, uint8, Progress calldata from, bytes calldata tape)
         external
         pure
         override
         returns (Progress memory p)
     {
-        p = start;
+        p = from;
         for (uint256 i; i < tape.length; ++i) {
             uint8 b = uint8(tape[i]);
             if (b == 0xFF) {
