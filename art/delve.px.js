@@ -1,5 +1,5 @@
 // Squeek Delve: pixel art for a hamster-burrow roguelike.
-// Rebuild: node /tmp/skills/pxl/pxl-pixel-art/bin/pxl.js build art/delve.px.js
+// Rebuild: node <pxl>/bin/pxl.js build art/delve.px.js (see README.md)
 // Light comes from the top-left. Characters face right (the game flips them).
 pal({
   k: "#14101C",                                                   // ink: outlines, eyes, tunnel dark
@@ -12,18 +12,56 @@ pal({
   c: "#F7E3C3", n: "#F08AA0",                                     // cream belly/cheeks, nose
   b: "#232A5C", B: "#2F6B9A", t: "#45B5AE", T: "#9EF0DC",         // beetle shell
   g: "#1F4A3A", G: "#3C8A44", v: "#86C452", V: "#D2E27A",         // snake (V also cat eyes)
-  a: "#E07B39", A: "#9C4628",                                     // tabby orange
+  a: "#E07B39", A: "#9C4628",                                     // tabby orange (A doubles as Rootclay grit)
+  e: "#2B1419", E: "#4A1E1F", i: "#73302A", j: "#BD6440", J: "#DB9068",   // Rootclay: wall top -> lit lip
+  m: "#191828", M: "#2A2840", p: "#3B3958", P: "#504D74", x: "#6E6C9A",   // Crystal Deep slate
+  C: "#7E4FD0", N: "#C9A2FF",                                     // violet crystal
+  O: "#7D6F66",                                                   // rat gray-brown
 })
-ramps("kKDfFlL", "kbBtT", "kgGvV", "rRn", "oyYw", "sS", "Aa")
+ramps("kKDfFlL", "kbBtT", "kgGvV", "rRn", "oyYw", "sS", "Aa", "eEiAjJ", "mMpPx", "CN")
 
-// ------------------------------------------------------------------ floor & walls (16x16, opaque)
-sprite("_floor", { w: 16, h: 16 },
-  rect(0, 0, 16, 16, "f"),
-  // packed dirt is granular: a sparse, even scatter of lighter grit and darker pits
-  noise(0, 0, 16, 16, "F", 0.035, 11), noise(0, 0, 16, 16, "D", 0.02, 23))
+// ------------------------------------------------------------------ biomes (16x16, opaque)
+// Each biome swaps the same roles: wall top, its grit, cave floor, floor grit, pits, lit face, lip,
+// lower face, lower strata, and the dark seam at the foot of the wall.
+const BIOMES = {
+  b0: { top: "K", tg: "D", fl: "f", gr: "F", pit: "D", face: "l", lip: "L", low: "F", str: "f", base: "D" },   // Topsoil
+  b1: { top: "e", tg: "E", fl: "i", gr: "A", pit: "E", face: "j", lip: "J", low: "A", str: "i", base: "E" },   // Rootclay
+  b2: { top: "m", tg: "M", fl: "p", gr: "P", pit: "M", face: "x", lip: "S", low: "P", str: "p", base: "M" },   // Crystal Deep
+}
+for (const [n, B] of Object.entries(BIOMES)) {
+  sprite(`_${n}_floor`, { w: 16, h: 16 },
+    rect(0, 0, 16, 16, B.fl),
+    // packed ground is granular: a sparse, even scatter of lighter grit and darker pits
+    noise(0, 0, 16, 16, B.gr, 0.035, 11), noise(0, 0, 16, 16, B.pit, 0.02, 23))
+  sprite(`${n}_floor_0`, { w: 16, h: 16 }, stamp(`_${n}_floor`, 0, 0))
 
-sprite("floor_0", { w: 16, h: 16 }, stamp("_floor", 0, 0))
-sprite("floor_1", { w: 16, h: 16 }, stamp("_floor", 0, 0),   // pebble pair
+  sprite(`_${n}_walltop`, { w: 16, h: 16 }, rect(0, 0, 16, 16, B.top), noise(0, 0, 16, 16, B.tg, 0.04, 5))
+  sprite(`${n}_wall_top`, { w: 16, h: 16 }, stamp(`_${n}_walltop`, 0, 0))
+
+  // 3/4 wall: 5px of wall top, a lit lip, then the face with strata that meet at the tile edges.
+  sprite(`_${n}_wallface`, { w: 16, h: 16 },
+    stamp(`_${n}_walltop`, 0, 0),
+    rect(0, 5, 16, 11, B.face),
+    hline(0, 5, 16, B.lip),
+    rect(0, 10, 16, 6, B.low),
+    (c) => { for (let x = 0; x < 16; x++) c.px(x, x < 5 || x > 11 ? 9 : 8, B.low) },
+    (c) => { for (let x = 0; x < 16; x++) c.px(x, x < 7 || x > 12 ? 13 : 12, B.str) },
+    hline(0, 15, 16, B.base))
+
+  // Stairs down: a hole with a root ladder, on this biome's floor.
+  sprite(`${n}_stairs`, { w: 16, h: 16 },
+    stamp(`_${n}_floor`, 0, 0),
+    ellipse(8, 9, 6, 5, B.pit),
+    ellipse(8, 10, 5, 4, "k"),
+    hline(4, 6, 9, B.gr), hline(3, 7, 11, B.top),   // far wall of the shaft, lit
+    vline(5, 3, 11, "L"), vline(11, 3, 11, "L"), px(5, 3, "l"), px(11, 3, "l"), px(6, 3, B.pit), px(12, 3, B.pit),
+    hline(6, 8, 5, "L"), hline(6, 11, 5, "l"), hline(6, 13, 5, "F"),
+    vline(5, 12, 2, "l"), vline(11, 12, 2, "l"))
+}
+const T = (n, name, ...items) => sprite(`${n}_${name}`, { w: 16, h: 16 }, ...items)
+
+// --- b0 Topsoil: warm dirt
+T("b0", "floor_1", stamp("_b0_floor", 0, 0),   // pebble pair
   grid(3, 8, `
     .SS.
     SSss
@@ -33,7 +71,7 @@ sprite("floor_1", { w: 16, h: 16 }, stamp("_floor", 0, 0),   // pebble pair
     SS
     ss
     DD`))
-sprite("floor_2", { w: 16, h: 16 }, stamp("_floor", 0, 0),   // root tip poking out of the ground
+T("b0", "floor_2", stamp("_b0_floor", 0, 0),   // root tip poking out of the ground
   grid(2, 3, `
     DLL......
     .DlLL....
@@ -41,39 +79,13 @@ sprite("floor_2", { w: 16, h: 16 }, stamp("_floor", 0, 0),   // root tip poking 
     ....DDlL.
     ......Dl.
     .......D.`))
-sprite("floor_3", { w: 16, h: 16 }, stamp("_floor", 0, 0),   // tiny hamster pawprints, pressed in
-  grid(2, 2, `
-    D.D
-    .K.`),
-  grid(8, 6, `
-    D.D
-    .K.`),
-  grid(4, 10, `
-    D.D
-    .K.`),
-  grid(10, 13, `
-    D.D
-    .K.`))
-
-sprite("_walltop", { w: 16, h: 16 },
-  rect(0, 0, 16, 16, "K"), noise(0, 0, 16, 16, "D", 0.04, 5))
-sprite("wall_top", { w: 16, h: 16 }, stamp("_walltop", 0, 0))
-
-// 3/4 wall: 5px of wall top, a lit lip, then the earth face with strata that meet at the tile edges.
-sprite("_wallface", { w: 16, h: 16 },
-  stamp("_walltop", 0, 0),
-  rect(0, 5, 16, 11, "l"),
-  hline(0, 5, 16, "L"),
-  rect(0, 10, 16, 6, "F"),
-  // strata: start and end at the same rows so neighbours join
-  (c) => { for (let x = 0; x < 16; x++) c.px(x, x < 5 || x > 11 ? 9 : 8, "F") },
-  (c) => { for (let x = 0; x < 16; x++) c.px(x, x < 7 || x > 12 ? 13 : 12, "f") },
-  hline(0, 15, 16, "D"))
-sprite("wall_face_0", { w: 16, h: 16 }, stamp("_wallface", 0, 0),
+const PAWS = (a, b) => [[2, 2], [8, 6], [4, 10], [10, 13]].map(([x, y]) => grid(x, y, `${a}.${a}\n.${b}.`))
+T("b0", "floor_3", stamp("_b0_floor", 0, 0), ...PAWS("D", "K"))   // tiny hamster pawprints, pressed in
+T("b0", "wall_face_0", stamp("_b0_wallface", 0, 0),
   grid(10, 10, `
     Ss
     sD`))
-sprite("wall_face_1", { w: 16, h: 16 }, stamp("_wallface", 0, 0),   // a root hanging out of the face
+T("b0", "wall_face_1", stamp("_b0_wallface", 0, 0),   // a root hanging out of the face
   grid(4, 5, `
     LD.
     lD.
@@ -82,22 +94,114 @@ sprite("wall_face_1", { w: 16, h: 16 }, stamp("_wallface", 0, 0),   // a root ha
     .lD
     .L.
     ..l`))
+// room: old planks, 4px boards with staggered butt joints (rows line up across tiles)
+const planks = (joints, ...extra) => [
+  rect(0, 0, 16, 16, "F"),
+  (c) => { for (let y = 0; y < 16; y += 4) { c.hline(0, y + 3, 16, "D"); c.hline(0, y, 16, "l") } },
+  (c) => joints.forEach((x, i) => { c.vline(x, i * 4, 3, "D"); c.px(x + 1, i * 4, "F") }),
+  ...extra]
+T("b0", "room_0", ...planks([5, 12, 2, 9]), hline(8, 9, 3, "f"), px(13, 1, "s"), px(3, 13, "s"))
+T("b0", "room_1", ...planks([10, 3, 14, 6]), hline(1, 5, 4, "f"), hline(9, 14, 3, "f"), px(11, 1, "s"), px(4, 9, "s"),
+  grid(12, 9, "fD\nDf"))   // a knot in the wood
 
-// Stairs down: a hole with a root ladder, on floor.
-sprite("stairs", { w: 16, h: 16 },
-  stamp("_floor", 0, 0),
-  ellipse(8, 9, 6, 5, "D"),
-  ellipse(8, 10, 5, 4, "k"),
-  hline(4, 6, 9, "F"), hline(3, 7, 11, "K"),   // far wall of the shaft, lit
-  vline(5, 3, 11, "L"), vline(11, 3, 11, "L"), px(5, 3, "l"), px(11, 3, "l"), px(6, 3, "D"), px(12, 3, "D"),
-  hline(6, 8, 5, "L"), hline(6, 11, 5, "l"), hline(6, 13, 5, "F"),
-  vline(5, 12, 2, "l"), vline(11, 12, 2, "l"))
+// --- b1 Rootclay: red terracotta clay laced with dark roots
+T("b1", "floor_1", stamp("_b1_floor", 0, 0),   // clay lumps rolled off the walls
+  grid(3, 9, `
+    .jj.
+    jjAA
+    EAAA
+    .EE.`),
+  grid(10, 4, `
+    jA
+    EE`))
+T("b1", "floor_2", stamp("_b1_floor", 0, 0),   // a dark root crossing the floor, dipping under the clay
+  grid(0, 6, `
+    DD.............D
+    KDDD........DDK.
+    ..KKDD....DDK...
+    ....KKDDDDKK....
+    ......KKKK......`))
+T("b1", "floor_3", stamp("_b1_floor", 0, 0),   // the clay dried and cracked
+  grid(3, 3, `
+    E.......
+    .E......
+    .jE.....
+    ..jEE...
+    ....jEEE
+    ....E...
+    ...jE...
+    ...E....`))
+T("b1", "wall_face_0", stamp("_b1_wallface", 0, 0),   // a buried stone
+  grid(10, 10, `
+    Ss
+    sE`))
+T("b1", "wall_face_1", stamp("_b1_wallface", 0, 0),   // a thick dark root hanging out of the face
+  grid(4, 5, `
+    DK.
+    DK.
+    DDK
+    .DK
+    .DK
+    .DK
+    ..K`), grid(7, 9, "D\nK"))
+// room: fired clay bricks in a running bond, 8x4 with offset rows
+const bricks = (...extra) => [
+  rect(0, 0, 16, 16, "A"),
+  (c) => { for (let y = 0; y < 16; y += 4) { c.hline(0, y + 3, 16, "E"); c.hline(0, y, 16, "j") } },
+  (c) => { for (let y = 0; y < 16; y += 4) for (const x of (y / 4) % 2 ? [3, 11] : [7, 15]) { c.vline(x, y, 3, "E"); c.px(x + 1 > 15 ? 0 : x + 1, y, "A") } },
+  ...extra]
+T("b1", "room_0", ...bricks(), hline(9, 9, 2, "i"), hline(1, 13, 3, "i"))
+T("b1", "room_1", ...bricks(), grid(12, 4, "E.\n.E\nE."), grid(1, 4, "K\nK.\n.K"), hline(2, 13, 3, "i"))   // cracked brick, a root through a joint
 
-// Exit: golden hamster wheel. The two frames turn the spokes 45 degrees.
+// --- b2 Crystal Deep: cool slate, crystals growing from the walls
+T("b2", "floor_1", stamp("_b2_floor", 0, 0),   // slate chips
+  grid(3, 9, `
+    .xx.
+    xxPP
+    MPPP
+    .MM.`),
+  grid(10, 4, `
+    xP
+    MM`))
+T("b2", "floor_2", stamp("_b2_floor", 0, 0),   // a crystal shard that broke off a wall
+  grid(9, 8, `
+    ..T.
+    .Tt.
+    MtM.`))
+T("b2", "floor_3", stamp("_b2_floor", 0, 0), ...PAWS("M", "m"))   // pawprints in the slate dust
+T("b2", "wall_face_0", stamp("_b2_wallface", 0, 0),   // cyan crystal cluster
+  grid(8, 6, `
+    ..w...
+    .TT...
+    .Tt.T.
+    TTt.Tt
+    Ttt.tt
+    MtMMtM`),
+  glow("wT", { where: [8, 6, 6, 6], r: 3, ramp: 1 }))
+T("b2", "wall_face_1", stamp("_b2_wallface", 0, 0),   // violet crystal
+  grid(3, 7, `
+    .N..
+    NNC.
+    NCC.
+    NCCN
+    MCMC`),
+  glow("N", { where: [3, 7, 4, 5], r: 3, ramp: 1 }))
+// room: slate flagstones; seams drawn on the left/top edges so neighbours close them
+const slabs = (...extra) => [
+  rect(0, 0, 16, 16, "P"),
+  hline(0, 0, 16, "M"), vline(0, 0, 9, "M"), vline(9, 0, 9, "M"), hline(0, 9, 16, "M"), vline(5, 9, 7, "M"), vline(12, 9, 7, "M"),
+  // lit top-left lips on each slab
+  hline(1, 1, 8, "x"), vline(1, 1, 8, "x"), hline(10, 1, 6, "x"), vline(10, 1, 8, "x"),
+  hline(0, 10, 5, "x"), hline(6, 10, 6, "x"), vline(6, 10, 6, "x"), hline(13, 10, 3, "x"), vline(13, 10, 6, "x"),
+  ...extra]
+T("b2", "room_0", ...slabs())
+T("b2", "room_1", ...slabs(), grid(3, 3, "M..\n.M.\n.MM\n..M"), grid(13, 5, "t\nM"))   // a crack and a sliver of crystal in a seam
+
+// Exit: golden hamster wheel on Crystal Deep ground. The two frames turn the spokes 45 degrees.
 anim("exit", { w: 16, h: 16, fps: 4 },
-  stamp("_floor", 0, 0),
+  stamp("_b2_floor", 0, 0),
   line(8, 8, 4, 15, "o"), line(8, 8, 12, 15, "o"),
-  hline(3, 15, 3, "D"), hline(11, 15, 3, "D"),
+  hline(3, 15, 3, "m"), hline(11, 15, 3, "m"),
   ring(8, 7, 6, "y"), ring(8, 7, 5, "o"),
   frame(line(8, 3, 8, 11, "y"), line(4, 7, 12, 7, "y"), px(4, 2, "Y"), px(3, 3, "Y")),
   frame(line(5, 4, 11, 10, "y"), line(11, 4, 5, 10, "y"), px(2, 5, "Y"), px(6, 1, "Y"), px(13, 9, "Y")),
@@ -283,19 +387,22 @@ sprite("icon_sword", { w: 6, h: 6, outline: "k" }, `
   y..o..`)
 
 sheet("sprites", [
-  "floor_*", "wall_top", "wall_face_*", "stairs", "exit",
+  "b0_*", "b1_*", "b2_*", "exit",
   "hero", "beetle", "snake", "cat",
   "seed", "cheese", "hit", "sparkle", "grave",
   "heart_full", "heart_half", "heart_empty", "icon_seed", "icon_floor", "icon_skull", "icon_wheel", "icon_sword",
 ], { pad: 1 })
 
 // ------------------------------------------------------------------ seam test (not exported to the game)
-scene("tiletest", { w: 96, h: 64, bg: "k" },
-  tilemap(`
-    TTTTTT
-    WVWWVW
-    0123s0
-    21e032`, { size: 16, map: { T: "wall_top", W: "wall_face_0", V: "wall_face_1", 0: "floor_0", 1: "floor_1", 2: "floor_2", 3: "floor_3", s: "stairs", e: "exit" }, frame: 0 }))
+for (const n of Object.keys(BIOMES))
+  scene(`tiletest_${n}`, { w: 128, h: 96, bg: "k" },
+    tilemap(`
+      TTTTTTTT
+      TWVWWVWT
+      T0123s0T
+      T2rRrR1T
+      T3RrRr${n === "b2" ? "e" : "0"}T
+      TTWVTTTT`, { size: 16, map: { T: `${n}_wall_top`, W: `${n}_wall_face_0`, V: `${n}_wall_face_1`, 0: `${n}_floor_0`, 1: `${n}_floor_1`, 2: `${n}_floor_2`, 3: `${n}_floor_3`, r: `${n}_room_0`, R: `${n}_room_1`, s: `${n}_stairs`, e: "exit" }, frame: 0 }))
 
 // ------------------------------------------------------------------ title illustration (240x96)
 pal({ z: "#1A1A20", q: "#F08A3C", Q: "#FFE08A" })   // night sky (UI bg), torch flame
