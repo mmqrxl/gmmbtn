@@ -61,6 +61,15 @@ interface ISqueekCore {
 interface ISqueekNFT {
     function ownerOf(uint256 tokenId) external view returns (address);
     function level(uint256 tokenId) external view returns (uint8);
+    function renderer() external view returns (address);
+    function art() external view returns (address);
+    function collectionSeed() external view returns (bytes32);
+    function revealState() external view returns (bool revealed, bytes32 artSeed);
+}
+
+/// @dev The DotGrid renderer SqueekNFT uses; `traitWord` packs a token's deterministic traits.
+interface IDotGridRenderer {
+    function traitWord(address page, bytes32 seed, uint256 tokenId) external view returns (uint256);
 }
 
 interface ISqueekStaking {
