@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Script, console} from "forge-std/Script.sol";
 import {SqueekDelve} from "../src/SqueekDelve.sol";
+import {DelveRules} from "../src/DelveRules.sol";
 import {ISqueekCore, ISqueekNFT, ISqueekStaking} from "../src/interfaces/ISqueekchain.sol";
 
 /// forge script script/Deploy.s.sol --rpc-url $SEPOLIA_RPC_URL --account <keystore> --broadcast
@@ -15,8 +16,10 @@ contract Deploy is Script {
     function run() external returns (SqueekDelve game) {
         require(block.chainid == 11155111, "Sepolia only");
         vm.startBroadcast();
-        game = new SqueekDelve(ISqueekCore(CORE), ISqueekNFT(NFT), ISqueekStaking(STAKING));
+        DelveRules rules = new DelveRules();
+        game = new SqueekDelve(ISqueekCore(CORE), ISqueekNFT(NFT), ISqueekStaking(STAKING), rules);
         vm.stopBroadcast();
+        console.log("DelveRules deployed at", address(rules));
         console.log("SqueekDelve deployed at", address(game));
     }
 }
