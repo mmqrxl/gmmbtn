@@ -5,7 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {SqueekDelve} from "../src/SqueekDelve.sol";
 import {DelveRules} from "../src/DelveRules.sol";
 import {ISqueekCore, ISqueekNFT, ISqueekStaking} from "../src/interfaces/ISqueekchain.sol";
-import {MockCore, MockNFT, MockStaking} from "./mocks/Mocks.sol";
+import {MockCore, MockNFT, MockStaking, MockRenderer} from "./mocks/Mocks.sol";
 import {MockRules} from "./mocks/MockRules.sol";
 import {ProgressJson} from "./ProgressJson.sol";
 
@@ -59,10 +59,54 @@ contract SqueekDelveTest is Test {
         assertEq(r.work, 360);
         assertEq(r.level, 9);
         assertEq(r.progress.floor, 1);
-        assertEq(r.progress.maxHp, 28); // 10 + 2 * level 9
+        assertEq(r.progress.maxHp, 37); // 10 + 3 * level 9
+        assertEq(r.progress.atk, 5); // 1 + level 9 / 2
+        assertEq(r.rarity, 0); // unrevealed mock collection: no trait bonuses
         _settle(30, 0); // hamster slept
         (uint256 run2,) = _start(game, alice, 2);
         assertEq(game.run(run2).mood, 0);
+    }
+
+    function test_higherLevelStartsStronger() public {
+        nft.mint(alice, 50, 2);
+        (DelveRules.Progress memory l1,,,) = game.delverStats(1);
+        (DelveRules.Progress memory l2,,,) = game.delverStats(50);
+        assertGt(l2.maxHp, l1.maxHp);
+        assertGt(l2.crit, l1.crit);
+    }
+
+    /// Real traitWords: Squeek #2 (a pair of Clovers) and a Legendary four-of-a-kind Squeek.
+    function test_traitsGiveEachSqueekItsOwnStats() public {
+        string memory json = vm.readFile("test/fixtures/parity.json");
+        MockRenderer renderer = new MockRenderer();
+        nft.reveal(address(renderer));
+        uint256 legendary;
+        for (uint256 i; legendary == 0; ++i) {
+            string memory k = string.concat(".genes[", vm.toString(i), "]");
+            if (vm.parseJsonUint(json, string.concat(k, ".tier")) == 4) {
+                legendary = vm.parseUint(vm.parseJsonString(json, string.concat(k, ".word")));
+            }
+        }
+        renderer.setWord(1, 0x0000000000000000000000e57ad73659bbf925010005000c000c0903010b0b01); // Squeek #2's traits
+        renderer.setWord(3, legendary);
+        nft.mint(bob, 3, 1);
+
+        (DelveRules.Progress memory a, uint8 ra, uint8 ha, uint256 wa) = game.delverStats(1);
+        (DelveRules.Progress memory b, uint8 rb,,) = game.delverStats(3);
+        assertEq(wa, 0x0000000000000000000000e57ad73659bbf925010005000c000c0903010b0b01);
+        assertEq(ra, 1); // Uncommon: one pair
+        assertEq(ha, 1);
+        assertEq(rb, 4); // Legendary
+        assertEq(a.maxHp, 25); // 13 base + 12 from traits
+        assertEq(a.crit, 25); // 6 base + 19 from traits
+        assertEq(a.luck, 4);
+        assertGt(b.maxHp + b.atk * 5 + int256(b.crit + b.dodge), a.maxHp + a.atk * 5 + int256(a.crit + a.dodge));
+
+        (uint256 runId,) = _start(game, alice, 1);
+        SqueekDelve.Run memory r = game.run(runId);
+        assertEq(r.rarity, 1);
+        assertEq(r.progress.maxHp, 25);
+        assertEq(r.progress.hp, 25);
     }
 
     function test_everyRunGetsItsOwnSeed() public {
