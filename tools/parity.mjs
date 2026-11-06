@@ -1,12 +1,16 @@
 // Generates test/fixtures/parity.json from the JS engine (web/engine.js). The Forge tests replay
 // every case through DelveRules.sol, checkpoint by checkpoint, and require identical results.
 // Usage: node tools/parity.mjs   (needs Foundry's `cast` for the integration seed)
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import {
   FLOORS, ACT, newRun, step, isOver, genFloor, fromProgress, progressOf, score, PROGRESS_FIELDS,
 } from "../web/engine.js";
 import { botAction } from "./bot.mjs";
+import { genes } from "../web/genes.js";
+
+// Real Squeek traitWords (token 1..9999) read from Sepolia's DotGrid renderer; see tools/traitwords.mjs.
+const WORDS = JSON.parse(readFileSync(new URL("./traitwords.json", import.meta.url))).words;
 
 let s0 = 0x5eed1234;
 const rand = () => ((s0 = (Math.imul(s0, 1664525) + 1013904223) >>> 0) / 2 ** 32);
@@ -47,10 +51,11 @@ for (let i = 0; i < 36; i++) {
   const seed = Math.floor(rand() * 2 ** 32) >>> 0;
   const level = 1 + Math.floor(rand() * 10);
   const mood = i % 4;
-  const s = newRun(seed, level, mood);
+  const word = i % 2 === 1 ? WORDS[1 + Math.floor(rand() * 9999)] : null;
+  const s = newRun(seed, level, mood, word);
   const opts = { useSling: i % 3 !== 1, noise: i % 3 === 2 ? 0.08 : 0, junk: i % 9 === 8 };
   const chunks = play(s, opts, 2500);
-  cases.push({ seed, mood, level, start: null, chunks, ...out(s) });
+  cases.push({ seed, mood, level, word: word ?? "0x0", start: null, chunks, ...out(s) });
 }
 // Deep checkpoints: strong delvers dropped onto deep floors, to cover big maps, late monsters,
 // bosses (including the Cat Emperor on floor 200) and top-tier loot.
@@ -100,6 +105,17 @@ for (let i = 0; i < 60; i++) {
   });
 }
 
+// Genes: every Legendary and Epic Squeek plus a random sample, against DelveRules.genes/start.
+const geneIds = [];
+for (let id = 1; id <= 9999; id++) if ((genes(WORDS[id])?.tier ?? 0) >= 3) geneIds.push(id);
+for (let k = 0; k < 150; k++) geneIds.push(1 + Math.floor(rand() * 9999));
+const geneCases = geneIds.map((id, k) => {
+  const level = 1 + (k % 10);
+  const g = genes(WORDS[id]);
+  const s = newRun(k + 1, level, 1, WORDS[id]);
+  return { id, word: WORDS[id], level, seed: k + 1, tier: g.tier, hand: g.hand, bonus: g.bonus, start: out(s).final };
+});
+
 // Integration run for test/SqueekDelve.t.sol: the seed SqueekDelve.startRun derives when
 // prevrandao = 0xbeef, blockhash(n-1) = 0xcafe, runId 0, tokenId 2, player = 0xA11CE.
 const enc = execSync(`cast abi-encode "f(uint256,bytes32,uint256,uint256,address)" 0xbeef 0x${"cafe".padStart(64, "0")} 0 2 0x${"a11ce".padStart(40, "0")}`).toString().trim();
@@ -108,7 +124,7 @@ const is = newRun(iseed, 9, 1);
 const ichunks = play(is, {}, 3000);
 const integration = { seed: iseed, level: 9, mood: 1, chunks: ichunks, ...out(is) };
 
-writeFileSync(new URL("../test/fixtures/parity.json", import.meta.url), JSON.stringify({ cases, layouts, integration }));
+writeFileSync(new URL("../test/fixtures/parity.json", import.meta.url), JSON.stringify({ cases, layouts, integration, genes: geneCases }));
 const deepest = Math.max(...cases.map((c) => +c.final.floor));
-console.log(`cases=${cases.length} chunks=${cases.reduce((a, c) => a + c.chunks.length, 0)} dead=${cases.filter((c) => c.final.dead).length} `
+console.log(`genes=${geneCases.length} (tier>=3: ${geneCases.filter((g) => g.tier >= 3).length}) cases=${cases.length} chunks=${cases.reduce((a, c) => a + c.chunks.length, 0)} dead=${cases.filter((c) => c.final.dead).length} `
   + `won=${cases.filter((c) => c.final.won).length} deepest=${deepest} layouts=${layouts.length} integration floor ${is.floor} score ${score(is)} chunks ${ichunks.length}`);
