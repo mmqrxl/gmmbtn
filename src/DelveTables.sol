@@ -245,4 +245,348 @@ library DelveTables {
             }
         }
     }
+
+    /// @dev Gene option -> (stat index into DelveRules.genes, amount).
+    function glyph(uint256 i) internal pure returns (uint256 stat, int256 amount) {
+        if (i > 13) i = 13;
+        if (i <= 6) {
+            if (i <= 3) {
+                if (i <= 1) {
+                    if (i <= 0) {
+                        return (0, 2); // Circle
+                    } else {
+                        return (4, 2); // Rounded Square
+                    }
+                } else {
+                    if (i <= 2) {
+                        return (1, 1); // Triangle
+                    } else {
+                        return (3, 3); // Diamond
+                    }
+                }
+            } else {
+                if (i <= 5) {
+                    if (i <= 4) {
+                        return (8, 1); // Cross
+                    } else {
+                        return (9, 1); // Sparkle
+                    }
+                } else {
+                    return (2, 1); // Shield
+                }
+            }
+        } else {
+            if (i <= 10) {
+                if (i <= 8) {
+                    if (i <= 7) {
+                        return (10, 2); // Capsule
+                    } else {
+                        return (6, 8); // Crown
+                    }
+                } else {
+                    if (i <= 9) {
+                        return (0, 3); // Heart
+                    } else {
+                        return (7, 1); // Teardrop
+                    }
+                }
+            } else {
+                if (i <= 12) {
+                    if (i <= 11) {
+                        return (4, 3); // Lightning Bolt
+                    } else {
+                        return (5, 1); // Clover
+                    }
+                } else {
+                    return (0, 0); // unknown option
+                }
+            }
+        }
+    }
+
+    /// @dev Gene option -> (stat index into DelveRules.genes, amount).
+    function element(uint256 i) internal pure returns (uint256 stat, int256 amount) {
+        if (i > 9) i = 9;
+        if (i <= 4) {
+            if (i <= 2) {
+                if (i <= 1) {
+                    if (i <= 0) {
+                        return (9, 1); // Void
+                    } else {
+                        return (3, 4); // Cyan
+                    }
+                } else {
+                    return (8, 1); // Lime
+                }
+            } else {
+                if (i <= 3) {
+                    return (1, 1); // Orange
+                } else {
+                    return (7, 1); // Magenta
+                }
+            }
+        } else {
+            if (i <= 7) {
+                if (i <= 6) {
+                    if (i <= 5) {
+                        return (1, 1); // Red
+                    } else {
+                        return (2, 1); // Ice
+                    }
+                } else {
+                    return (5, 1); // RGB
+                }
+            } else {
+                if (i <= 8) {
+                    return (6, 15); // Gold
+                } else {
+                    return (0, 0); // unknown option
+                }
+            }
+        }
+    }
+
+    /// @dev Gene option -> (stat index into DelveRules.genes, amount).
+    function pattern(uint256 i) internal pure returns (uint256 stat, int256 amount) {
+        if (i > 6) i = 6;
+        if (i <= 3) {
+            if (i <= 1) {
+                if (i <= 0) {
+                    return (0, 3); // Solid
+                } else {
+                    return (3, 2); // Vertical Split
+                }
+            } else {
+                if (i <= 2) {
+                    return (4, 2); // Horizontal Split
+                } else {
+                    return (8, 1); // Radial Core
+                }
+            }
+        } else {
+            if (i <= 5) {
+                if (i <= 4) {
+                    return (2, 1); // Checker
+                } else {
+                    return (5, 1); // Spectral Noise
+                }
+            } else {
+                return (0, 0); // unknown option
+            }
+        }
+    }
+
+    /// @dev Gene option -> (stat index into DelveRules.genes, amount).
+    function illumination(uint256 i) internal pure returns (uint256 stat, int256 amount) {
+        if (i > 5) i = 5;
+        if (i <= 2) {
+            if (i <= 1) {
+                if (i <= 0) {
+                    return (0, 2); // Balanced Field
+                } else {
+                    return (8, 1); // Core Pulse
+                }
+            } else {
+                return (9, 1); // Rim Trace
+            }
+        } else {
+            if (i <= 4) {
+                if (i <= 3) {
+                    return (4, 3); // Phase Sweep
+                } else {
+                    return (1, 1); // Overdrive
+                }
+            } else {
+                return (0, 0); // unknown option
+            }
+        }
+    }
+
+    /// @dev Gene option -> (stat index into DelveRules.genes, amount).
+    function eyes(uint256 i) internal pure returns (uint256 stat, int256 amount) {
+        if (i > 12) i = 12;
+        if (i <= 6) {
+            if (i <= 3) {
+                if (i <= 1) {
+                    if (i <= 0) {
+                        return (3, 1); // Standard Capsules
+                    } else {
+                        return (9, 1); // Wide Blocks
+                    }
+                } else {
+                    if (i <= 2) {
+                        return (3, 2); // Tiny Pixels
+                    } else {
+                        return (8, 1); // Sleepy Bars
+                    }
+                }
+            } else {
+                if (i <= 5) {
+                    if (i <= 4) {
+                        return (1, 1); // X Expression
+                    } else {
+                        return (3, 4); // Reticle
+                    }
+                } else {
+                    return (4, 2); // Vertical Slits
+                }
+            }
+        } else {
+            if (i <= 9) {
+                if (i <= 8) {
+                    if (i <= 7) {
+                        return (3, 3); // Focused Chevrons
+                    } else {
+                        return (5, 1); // Happy Arcs
+                    }
+                } else {
+                    return (4, 3); // Broken Signal
+                }
+            } else {
+                if (i <= 11) {
+                    if (i <= 10) {
+                        return (5, 1); // Wink
+                    } else {
+                        return (9, 1); // Orbit Rings
+                    }
+                } else {
+                    return (0, 0); // unknown option
+                }
+            }
+        }
+    }
+
+    /// @dev Gene option -> (stat index into DelveRules.genes, amount).
+    function ears(uint256 i) internal pure returns (uint256 stat, int256 amount) {
+        if (i > 6) i = 6;
+        if (i <= 3) {
+            if (i <= 1) {
+                if (i <= 0) {
+                    return (0, 2); // Canonical Round
+                } else {
+                    return (4, 2); // Compact Round
+                }
+            } else {
+                if (i <= 2) {
+                    return (9, 1); // Wide Round
+                } else {
+                    return (2, 1); // Soft Square
+                }
+            }
+        } else {
+            if (i <= 5) {
+                if (i <= 4) {
+                    return (1, 1); // Notched
+                } else {
+                    return (10, 3); // Hollow Ring
+                }
+            } else {
+                return (0, 0); // unknown option
+            }
+        }
+    }
+
+    /// @dev Gene option -> (stat index into DelveRules.genes, amount).
+    function background(uint256 i) internal pure returns (uint256 stat, int256 amount) {
+        if (i > 5) i = 5;
+        if (i <= 2) {
+            if (i <= 1) {
+                if (i <= 0) {
+                    return (10, 2); // Dot Grid
+                } else {
+                    return (5, 1); // Micro Dots
+                }
+            } else {
+                return (6, 5); // Wide Dots
+            }
+        } else {
+            if (i <= 4) {
+                if (i <= 3) {
+                    return (3, 2); // Scanlines
+                } else {
+                    return (2, 1); // Cross Grid
+                }
+            } else {
+                return (0, 0); // unknown option
+            }
+        }
+    }
+
+    /// @dev Palette option -> (element index, spectral flag that doubles it, known option).
+    function palette(uint256 i) internal pure returns (uint256 el, bool spectral, bool known) {
+        if (i > 18) i = 18;
+        if (i <= 9) {
+            if (i <= 4) {
+                if (i <= 2) {
+                    if (i <= 1) {
+                        if (i <= 0) {
+                            return (0, false, true); // Void Violet
+                        } else {
+                            return (1, false, true); // Electric Cyan
+                        }
+                    } else {
+                        return (2, false, true); // Acid Lime
+                    }
+                } else {
+                    if (i <= 3) {
+                        return (3, false, true); // Orange CRT
+                    } else {
+                        return (4, false, true); // Hot Magenta
+                    }
+                }
+            } else {
+                if (i <= 7) {
+                    if (i <= 6) {
+                        if (i <= 5) {
+                            return (5, false, true); // Reactor Red
+                        } else {
+                            return (6, false, true); // Ice White
+                        }
+                    } else {
+                        return (7, true, true); // Spectral RGB
+                    }
+                } else {
+                    if (i <= 8) {
+                        return (8, false, true); // Gold
+                    } else {
+                        return (7, false, true); // RGB
+                    }
+                }
+            }
+        } else {
+            if (i <= 14) {
+                if (i <= 12) {
+                    if (i <= 11) {
+                        if (i <= 10) {
+                            return (0, true, true); // Spectral Void Violet
+                        } else {
+                            return (1, true, true); // Spectral Electric Cyan
+                        }
+                    } else {
+                        return (2, true, true); // Spectral Acid Lime
+                    }
+                } else {
+                    if (i <= 13) {
+                        return (3, true, true); // Spectral Orange CRT
+                    } else {
+                        return (4, true, true); // Spectral Hot Magenta
+                    }
+                }
+            } else {
+                if (i <= 16) {
+                    if (i <= 15) {
+                        return (5, true, true); // Spectral Reactor Red
+                    } else {
+                        return (6, true, true); // Spectral Ice White
+                    }
+                } else {
+                    if (i <= 17) {
+                        return (8, true, true); // Spectral Gold
+                    } else {
+                        return (0, false, false); // unknown option
+                    }
+                }
+            }
+        }
+    }
 }
