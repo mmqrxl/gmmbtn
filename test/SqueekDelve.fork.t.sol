@@ -3,7 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {SqueekDelve} from "../src/SqueekDelve.sol";
-import {DelveEngine} from "../src/DelveEngine.sol";
+import {DelveRules} from "../src/DelveRules.sol";
 import {ISqueekCore, ISqueekNFT, ISqueekStaking} from "../src/interfaces/ISqueekchain.sol";
 
 /// @notice Runs against the live Sepolia deployment when SEPOLIA_RPC_URL is set.
@@ -14,6 +14,7 @@ contract SqueekDelveForkTest is Test {
     address constant STAKING = 0x50fd1780526C3186A0c037c7622203bC4fb611ca;
 
     SqueekDelve game;
+    DelveRules rules;
     bool live;
 
     function setUp() public {
@@ -21,10 +22,11 @@ contract SqueekDelveForkTest is Test {
         if (bytes(rpc).length == 0) return;
         vm.createSelectFork(rpc);
         live = true;
-        game = new SqueekDelve(ISqueekCore(CORE), ISqueekNFT(NFT), ISqueekStaking(STAKING));
+        rules = new DelveRules();
+        game = new SqueekDelve(ISqueekCore(CORE), ISqueekNFT(NFT), ISqueekStaking(STAKING), rules);
     }
 
-    function test_fork_openAndSubmitWithRealSqueek() public {
+    function test_fork_openStartSubmitWithRealSqueek() public {
         if (!live) return;
         game.openExpedition();
         SqueekDelve.Expedition memory ex = game.expedition(0);
@@ -35,15 +37,17 @@ contract SqueekDelveForkTest is Test {
 
         address holder = ISqueekNFT(NFT).ownerOf(1);
         uint8 lvl = ISqueekNFT(NFT).level(1);
-        bytes memory tape = hex"01010101020202020303030300000000";
-        DelveEngine.Result memory expected = game.simulate(ex.seed, lvl, ex.mood, tape);
         vm.prank(holder);
-        DelveEngine.Result memory got = game.submitRun(1, tape);
+        (uint256 runId, uint32 seed) = game.startRun(1);
+        bytes memory tape = hex"01010101020202020303030300000000";
+        DelveRules.Result memory expected = rules.simulate(seed, lvl, ex.mood, tape);
+        vm.prank(holder);
+        DelveRules.Result memory got = game.submitRun(runId, tape);
         assertEq(got.score, expected.score);
         assertEq(game.bestOf(0, 1).level, lvl);
 
         vm.prank(address(0xBEEF));
         vm.expectRevert(abi.encodeWithSelector(SqueekDelve.NotSqueekHolder.selector, 2));
-        game.submitRun(2, tape);
+        game.startRun(2);
     }
 }
