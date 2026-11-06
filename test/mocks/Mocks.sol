@@ -41,9 +41,35 @@ contract MockCore {
     }
 }
 
+contract MockRenderer {
+    mapping(uint256 => uint256) public words;
+
+    function setWord(uint256 tokenId, uint256 w) external {
+        words[tokenId] = w;
+    }
+
+    function traitWord(address, bytes32, uint256 tokenId) external view returns (uint256) {
+        return words[tokenId];
+    }
+}
+
 contract MockNFT {
     mapping(uint256 => address) public owners;
     mapping(uint256 => uint8) public levels;
+    address public renderer;
+    address public art = address(0xA27);
+    bytes32 public collectionSeed = bytes32(uint256(1));
+    bool internal _revealed;
+
+    /// @dev Reveal with a renderer that serves traitWords; unrevealed mocks give no trait bonuses.
+    function reveal(address renderer_) external {
+        renderer = renderer_;
+        _revealed = true;
+    }
+
+    function revealState() external view returns (bool, bytes32) {
+        return (_revealed, bytes32(uint256(2)));
+    }
 
     function mint(address to, uint256 id, uint8 lvl) external {
         owners[id] = to;
