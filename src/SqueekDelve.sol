@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {ISqueekCore, ISqueekNFT, ISqueekStaking} from "./interfaces/ISqueekchain.sol";
+import {ISqueekCore, ISqueekNFT, ISqueekStaking, IDotGridRenderer} from "./interfaces/ISqueekchain.sol";
 import {DelveRules} from "./DelveRules.sol";
 
 /// @title Squeek Delve
@@ -63,6 +63,8 @@ contract SqueekDelve {
         uint32 seed;
         uint8 level;
         uint8 mood;
+        uint8 rarity; // 0 Common .. 4 Legendary, from the Squeek's traits
+        uint8 hand; // glyph hand: 0 no match .. 6 five of a kind
         uint32 work; // hamster work in the mood window
         uint64 startedAt;
         uint64 startBlock;
@@ -76,6 +78,7 @@ contract SqueekDelve {
         uint32 score;
         uint16 floor;
         uint8 level;
+        uint8 rarity;
         uint8 weapon;
         uint8 armor;
         uint8 sling;
@@ -145,6 +148,7 @@ contract SqueekDelve {
 
     /// @notice Begin a run with one of your Squeeks: a fresh random burrow, with the mood the real
     ///         hamster is in right now. Each Squeek can start 3 runs per daily season.
+    ///         Starting stats come from the Squeek's merge level and its onchain traits.
     function startRun(uint256 tokenId) external returns (uint256 runId, uint32 seed) {
         if (!canPlay(msg.sender, tokenId)) revert NotSqueekHolder(tokenId);
         uint256 season = currentSeason();
@@ -159,6 +163,7 @@ contract SqueekDelve {
             uint256(keccak256(abi.encode(block.prevrandao, blockhash(block.number - 1), runId, tokenId, msg.sender)))
         );
         uint8 lvl = levelOf(tokenId);
+        (DelveRules.Progress memory start, uint8 rarity, uint8 hand) = rules.start(lvl, seed, traitWordOf(tokenId));
         Run storage r = _runs.push();
         r.tokenId = tokenId;
         r.player = msg.sender;
@@ -166,11 +171,13 @@ contract SqueekDelve {
         r.seed = seed;
         r.level = lvl;
         r.mood = mood;
+        r.rarity = rarity;
+        r.hand = hand;
         r.work = uint32(work);
         r.startedAt = uint64(block.timestamp);
         r.startBlock = uint64(block.number);
         r.updatedAt = uint64(block.timestamp);
-        _store(r, rules.init(lvl, seed));
+        _store(r, start);
         ++_records[tokenId].runs;
         emit RunStarted(runId, season, tokenId, msg.sender, seed, lvl, mood, uint32(work));
     }
@@ -205,6 +212,7 @@ contract SqueekDelve {
             score: sc,
             floor: uint16(p.floor),
             level: r.level,
+            rarity: r.rarity,
             weapon: uint8(p.weapon),
             armor: uint8(p.armor),
             sling: uint8(p.sling),
@@ -276,6 +284,32 @@ contract SqueekDelve {
 
     function record(uint256 tokenId) external view returns (Record memory) {
         return _records[tokenId];
+    }
+
+    /// @notice The Squeek's packed traits from SqueekNFT's DotGrid renderer, or 0 if unavailable
+    ///         (unrevealed, unknown token, or a renderer read failure: the run then has no trait bonuses).
+    function traitWordOf(uint256 tokenId) public view returns (uint256) {
+        try nft.revealState() returns (bool revealed, bytes32 artSeed) {
+            if (!revealed) return 0;
+            bytes32 seed = keccak256(abi.encode(nft.collectionSeed(), artSeed));
+            try IDotGridRenderer(nft.renderer()).traitWord(nft.art(), seed, tokenId) returns (uint256 w) {
+                return w;
+            } catch {
+                return 0;
+            }
+        } catch {
+            return 0;
+        }
+    }
+
+    /// @notice The stats a run started now with `tokenId` would begin with, and its rarity.
+    function delverStats(uint256 tokenId)
+        external
+        view
+        returns (DelveRules.Progress memory p, uint8 rarity, uint8 hand, uint256 word)
+    {
+        word = traitWordOf(tokenId);
+        (p, rarity, hand) = rules.start(levelOf(tokenId), 0, word);
     }
 
     function levelOf(uint256 tokenId) public view returns (uint8) {
