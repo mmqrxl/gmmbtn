@@ -5,57 +5,81 @@ import {ISqueekCore, ISqueekNFT, ISqueekStaking} from "./interfaces/ISqueekchain
 import {DelveRules} from "./DelveRules.sol";
 
 /// @title Squeek Delve
-/// @notice A holder-only pixel roguelike for Squeek NFT holders on Sepolia.
-///         Expeditions run for two hours; the real work the hamster did in the six certified
-///         SqueekCore rounds before one opens sets its burrow mood. Every ranked run gets its own
-///         random burrow: `startRun` draws the seed onchain, the holder plays in the browser, and
-///         `submitRun` replays the whole action tape through DelveRules, so the score is verified,
-///         never trusted.
+/// @notice A holder-only pixel roguelike for Squeek NFT holders on Sepolia: 200 floors that grow
+///         bigger, deadlier and richer the deeper you go. `startRun` draws the run's burrow seed
+///         onchain and reads the real hamster's mood from SqueekCore's last six certified rounds.
+///         Holders play in the browser and checkpoint their progress with `advance`, which replays
+///         every move of the new floors through DelveRules, so every score is verified, never trusted.
 contract SqueekDelve {
-    uint64 public constant EXPEDITION_SECONDS = 2 hours;
-    uint64 public constant SUBMIT_GRACE = 30 minutes;
+    uint64 public constant SEASON_SECONDS = 1 days;
+    uint64 public constant RUN_TTL = 2 days;
     uint64 public constant MOOD_WINDOW_ROUNDS = 6;
-    uint8 public constant RUNS_PER_EXPEDITION = 3;
+    uint8 public constant RUNS_PER_SEASON = 3;
     uint256 public constant MAX_SQUEEK_ID = 9_999;
     uint256 public constant BOARD_SIZE = 10;
+    uint256 internal constant ALL_TIME = type(uint256).max;
 
     ISqueekCore public immutable core;
     ISqueekNFT public immutable nft;
     ISqueekStaking public immutable staking;
     DelveRules public immutable rules;
+    uint64 public immutable genesis;
 
-    struct Expedition {
-        bytes32 salt;
-        uint8 mood;
-        uint64 seedRound; // SqueekCore settledThroughRound when opened
-        uint64 work; // hamster work in the mood window
-        uint64 startsAt;
-        uint64 endsAt; // no new runs after this; submissions until endsAt + SUBMIT_GRACE
-        uint32 runs;
-        bool crowned;
+    /// @dev Checkpoint as stored: the same fields as DelveRules.Progress, packed.
+    struct Packed {
+        uint16 floor;
+        int32 hp;
+        int32 maxHp;
+        int32 atk;
+        int32 def;
+        uint8 weapon;
+        uint8 armor;
+        uint8 sling;
+        uint32 pebbles;
+        uint16 crit;
+        uint32 luck;
+        uint32 goldPct;
+        int32 leech;
+        int32 regen;
+        uint16 dodge;
+        uint16 vision;
+        uint32 xp;
+        uint16 lvl;
+        uint64 gold;
+        uint32 kills;
+        uint64 killScore;
+        uint16 bossKills;
+        uint32 turn;
+        uint32 rng;
+        bool dead;
+        bool fled;
+        bool won;
     }
 
     struct Run {
         uint256 tokenId;
         address player;
-        uint64 expeditionId;
+        uint32 season;
         uint32 seed;
         uint8 level;
+        uint8 mood;
+        uint32 work; // hamster work in the mood window
         uint64 startedAt;
-        bool submitted;
+        uint64 startBlock;
+        uint64 updatedAt;
         uint32 score;
+        Packed progress;
     }
 
     struct Best {
         uint256 runId;
         uint32 score;
-        uint8 floor;
-        uint16 kills;
-        bool won;
+        uint16 floor;
         uint8 level;
         uint8 weapon;
         uint8 armor;
         uint8 sling;
+        bool won;
         uint64 at;
     }
 
@@ -64,205 +88,163 @@ contract SqueekDelve {
         uint32 victories;
         uint32 crowns;
         uint32 bestScore;
-        uint64 totalScore; // sum of per-expedition bests
-        uint8 deepest;
+        uint16 deepest;
+        uint32 bossKills;
     }
 
-    Expedition[] internal _expeditions;
     Run[] internal _runs;
-    mapping(uint256 => mapping(uint256 => uint8)) public runsStarted;
-    mapping(uint256 => mapping(uint256 => Best)) internal _best;
+    mapping(uint256 => mapping(uint256 => uint8)) public runsStarted; // season => tokenId => count
+    mapping(uint256 => mapping(uint256 => Best)) internal _best; // season (or ALL_TIME) => tokenId
     mapping(uint256 => uint256[]) internal _boards;
+    mapping(uint256 => bool) public crowned;
     mapping(uint256 => Record) internal _records;
 
-    event ExpeditionOpened(uint256 indexed expeditionId, uint8 mood, uint64 seedRound, uint64 work, uint64 endsAt);
     event RunStarted(
         uint256 indexed runId,
-        uint256 indexed expeditionId,
+        uint256 indexed season,
         uint256 indexed tokenId,
         address player,
         uint32 seed,
-        uint8 level
+        uint8 level,
+        uint8 mood,
+        uint32 work
     );
-    event RunSubmitted(
+    event Advanced(
         uint256 indexed runId,
-        uint256 indexed expeditionId,
         uint256 indexed tokenId,
-        address player,
+        address indexed player,
+        uint16 fromFloor,
+        uint16 toFloor,
         uint32 score,
-        uint8 floor,
-        uint16 kills,
-        bool won,
         bool dead,
+        bool fled,
+        bool won,
         bytes tape
     );
-    event Crowned(uint256 indexed expeditionId, uint256 indexed tokenId, uint32 score);
+    event Crowned(uint256 indexed season, uint256 indexed tokenId, uint32 score);
 
-    error ExpeditionRunning(uint64 endsAt);
-    error NoOpenExpedition();
     error NotSqueekHolder(uint256 tokenId);
     error OutOfRuns(uint256 tokenId);
     error UnknownRun(uint256 runId);
     error NotYourRun(uint256 runId);
-    error AlreadySubmitted(uint256 runId);
-    error SubmissionClosed(uint256 runId);
+    error RunOver(uint256 runId);
+    error RunExpired(uint256 runId);
     error EmptyTape();
-    error NotEnded(uint256 expeditionId);
-    error AlreadyCrowned(uint256 expeditionId);
-    error UnknownExpedition(uint256 expeditionId);
+    error SeasonNotSettled(uint256 season);
+    error AlreadyCrowned(uint256 season);
 
     constructor(ISqueekCore core_, ISqueekNFT nft_, ISqueekStaking staking_, DelveRules rules_) {
         core = core_;
         nft = nft_;
         staking = staking_;
         rules = rules_;
+        genesis = uint64(block.timestamp);
     }
 
-    // ------------------------------------------------------------ expeditions
+    // ------------------------------------------------------------------- play
 
-    /// @notice Open the next expedition once the previous one has stopped taking new runs.
-    ///         Permissionless. Also crowns the expedition before last, whose grace has passed.
-    function openExpedition() external returns (uint256 id) {
-        id = _expeditions.length;
-        if (id != 0) {
-            Expedition storage prev = _expeditions[id - 1];
-            if (block.timestamp < prev.endsAt) revert ExpeditionRunning(prev.endsAt);
-            if (block.timestamp >= prev.endsAt + SUBMIT_GRACE && !prev.crowned) _crown(id - 1);
-        }
-
-        uint64 settled = core.state().settledThroughRound;
-        uint64 from = settled > MOOD_WINDOW_ROUNDS ? settled - MOOD_WINDOW_ROUNDS : 0;
-        ISqueekCore.LedgerPosition memory end = core.roundPage(settled, settled, 0).end;
-        uint64 work = end.cumulativeWork - core.roundPage(from, from, 0).end.cumulativeWork;
-        bytes32 salt = keccak256(abi.encode(address(this), id, settled, end.cumulativeWork, end.cumulativeBlockUnits));
-
-        uint8 mood = rules.moodForWork(work);
-        uint64 endsAt = uint64(block.timestamp) + EXPEDITION_SECONDS;
-        _expeditions.push(
-            Expedition({
-                salt: salt,
-                mood: mood,
-                seedRound: settled,
-                work: work,
-                startsAt: uint64(block.timestamp),
-                endsAt: endsAt,
-                runs: 0,
-                crowned: false
-            })
-        );
-        emit ExpeditionOpened(id, mood, settled, work, endsAt);
-    }
-
-    /// @notice Begin a ranked run with one of your Squeeks. Draws a fresh random burrow seed and
-    ///         uses one of the Squeek's runs for this expedition, whether or not it is submitted.
+    /// @notice Begin a run with one of your Squeeks: a fresh random burrow, with the mood the real
+    ///         hamster is in right now. Each Squeek can start 3 runs per daily season.
     function startRun(uint256 tokenId) external returns (uint256 runId, uint32 seed) {
-        uint256 id = _expeditions.length;
-        if (id == 0) revert NoOpenExpedition();
-        id -= 1;
-        Expedition storage ex = _expeditions[id];
-        if (block.timestamp >= ex.endsAt) revert NoOpenExpedition();
         if (!canPlay(msg.sender, tokenId)) revert NotSqueekHolder(tokenId);
-        uint8 n = runsStarted[id][tokenId];
-        if (n >= RUNS_PER_EXPEDITION) revert OutOfRuns(tokenId);
-        runsStarted[id][tokenId] = n + 1;
+        uint256 season = currentSeason();
+        uint8 n = runsStarted[season][tokenId];
+        if (n >= RUNS_PER_SEASON) revert OutOfRuns(tokenId);
+        runsStarted[season][tokenId] = n + 1;
 
+        (uint8 mood, uint64 work,) = hamsterMood();
         runId = _runs.length;
         // Testnet-grade randomness: unknown before the block that includes this call.
         seed = uint32(
-            uint256(
-                keccak256(
-                    abi.encode(block.prevrandao, blockhash(block.number - 1), ex.salt, runId, tokenId, msg.sender)
-                )
-            )
+            uint256(keccak256(abi.encode(block.prevrandao, blockhash(block.number - 1), runId, tokenId, msg.sender)))
         );
         uint8 lvl = levelOf(tokenId);
-        _runs.push(
-            Run({
-                tokenId: tokenId,
-                player: msg.sender,
-                expeditionId: uint64(id),
-                seed: seed,
-                level: lvl,
-                startedAt: uint64(block.timestamp),
-                submitted: false,
-                score: 0
-            })
-        );
-        ++ex.runs;
+        Run storage r = _runs.push();
+        r.tokenId = tokenId;
+        r.player = msg.sender;
+        r.season = uint32(season);
+        r.seed = seed;
+        r.level = lvl;
+        r.mood = mood;
+        r.work = uint32(work);
+        r.startedAt = uint64(block.timestamp);
+        r.startBlock = uint64(block.number);
+        r.updatedAt = uint64(block.timestamp);
+        _store(r, rules.init(lvl, seed));
         ++_records[tokenId].runs;
-        emit RunStarted(runId, id, tokenId, msg.sender, seed, lvl);
+        emit RunStarted(runId, season, tokenId, msg.sender, seed, lvl, mood, uint32(work));
     }
 
-    /// @notice Submit the action tape for a run you started. The contract replays it to score it.
-    function submitRun(uint256 runId, bytes calldata tape) external returns (DelveRules.Result memory res) {
+    /// @notice Checkpoint a run: replays `tape` (one or more whole floors, or the end of the run)
+    ///         onchain from the last checkpoint and records the new progress and score.
+    function advance(uint256 runId, bytes calldata tape) external returns (DelveRules.Progress memory p) {
         if (runId >= _runs.length) revert UnknownRun(runId);
         Run storage r = _runs[runId];
         if (r.player != msg.sender) revert NotYourRun(runId);
-        if (r.submitted) revert AlreadySubmitted(runId);
-        Expedition storage ex = _expeditions[r.expeditionId];
-        if (block.timestamp >= ex.endsAt + SUBMIT_GRACE) revert SubmissionClosed(runId);
+        if (r.progress.dead || r.progress.fled || r.progress.won) revert RunOver(runId);
+        if (block.timestamp >= r.startedAt + RUN_TTL) revert RunExpired(runId);
         if (tape.length == 0) revert EmptyTape();
 
-        res = rules.simulate(r.seed, r.level, ex.mood, tape);
-        uint32 sc = uint32(res.score);
-        r.submitted = true;
+        uint16 fromFloor = r.progress.floor;
+        p = rules.advance(r.seed, r.mood, _load(r.progress), tape);
+        _store(r, p);
+        uint32 sc = uint32(rules.score(p));
         r.score = sc;
+        r.updatedAt = uint64(block.timestamp);
 
         uint256 tokenId = r.tokenId;
         Record storage rec = _records[tokenId];
-        if (res.won) ++rec.victories;
-        if (res.floor > rec.deepest) rec.deepest = uint8(res.floor);
+        if (p.won && fromFloor != 0) ++rec.victories;
+        if (p.floor > rec.deepest) rec.deepest = uint16(p.floor);
         if (sc > rec.bestScore) rec.bestScore = sc;
+        rec.bossKills += uint32(p.bossKills) - _bossKillsBefore(r, p);
 
-        uint256 id = r.expeditionId;
-        Best storage b = _best[id][tokenId];
-        if (b.at == 0 || sc > b.score) {
-            rec.totalScore = rec.totalScore - b.score + sc;
-            _best[id][tokenId] = Best({
-                runId: runId,
-                score: sc,
-                floor: uint8(res.floor),
-                kills: uint16(res.kills),
-                won: res.won,
-                level: r.level,
-                weapon: res.weapon,
-                armor: res.armor,
-                sling: res.sling,
-                at: uint64(block.timestamp)
-            });
-            _updateBoard(id, tokenId, sc);
-        }
+        Best memory b = Best({
+            runId: runId,
+            score: sc,
+            floor: uint16(p.floor),
+            level: r.level,
+            weapon: uint8(p.weapon),
+            armor: uint8(p.armor),
+            sling: uint8(p.sling),
+            won: p.won,
+            at: uint64(block.timestamp)
+        });
+        _submitBest(r.season, tokenId, b);
+        _submitBest(ALL_TIME, tokenId, b);
 
-        emit RunSubmitted(
-            runId, id, tokenId, msg.sender, sc, uint8(res.floor), uint16(res.kills), res.won, res.dead, tape
-        );
+        emit Advanced(runId, tokenId, msg.sender, fromFloor, uint16(p.floor), sc, p.dead, p.fled, p.won, tape);
     }
 
-    /// @notice Record the champion of an expedition whose submission window has closed. Permissionless.
-    function crown(uint256 id) external {
-        if (id >= _expeditions.length) revert UnknownExpedition(id);
-        if (block.timestamp < _expeditions[id].endsAt + SUBMIT_GRACE) revert NotEnded(id);
-        if (_expeditions[id].crowned) revert AlreadyCrowned(id);
-        _crown(id);
+    /// @notice Record the champion of a season once all its runs have expired. Permissionless.
+    function crown(uint256 season) external {
+        if (block.timestamp < seasonEndsAt(season) + RUN_TTL) revert SeasonNotSettled(season);
+        if (crowned[season]) revert AlreadyCrowned(season);
+        crowned[season] = true;
+        uint256[] storage board = _boards[season];
+        if (board.length == 0) return;
+        uint256 champ = board[0];
+        ++_records[champ].crowns;
+        emit Crowned(season, champ, _best[season][champ].score);
     }
 
     // ----------------------------------------------------------------- views
 
-    function expeditionCount() external view returns (uint256) {
-        return _expeditions.length;
+    function currentSeason() public view returns (uint256) {
+        return (block.timestamp - genesis) / SEASON_SECONDS;
     }
 
-    function expedition(uint256 id) public view returns (Expedition memory) {
-        if (id >= _expeditions.length) revert UnknownExpedition(id);
-        return _expeditions[id];
+    function seasonEndsAt(uint256 season) public view returns (uint256) {
+        return genesis + (season + 1) * SEASON_SECONDS;
     }
 
-    /// @notice The latest expedition and whether it is still accepting new runs.
-    function current() external view returns (bool exists, bool open, uint256 id, Expedition memory ex) {
-        if (_expeditions.length == 0) return (false, false, 0, ex);
-        id = _expeditions.length - 1;
-        ex = _expeditions[id];
-        return (true, block.timestamp < ex.endsAt, id, ex);
+    /// @notice The mood a run started now would get, from the last six certified SqueekCore rounds.
+    function hamsterMood() public view returns (uint8 mood, uint64 work, uint64 settledThroughRound) {
+        settledThroughRound = core.state().settledThroughRound;
+        uint64 from = settledThroughRound > MOOD_WINDOW_ROUNDS ? settledThroughRound - MOOD_WINDOW_ROUNDS : 0;
+        work = core.roundPage(settledThroughRound, settledThroughRound, 0).end.cumulativeWork
+            - core.roundPage(from, from, 0).end.cumulativeWork;
+        mood = rules.moodForWork(work);
     }
 
     function runCount() external view returns (uint256) {
@@ -274,16 +256,21 @@ contract SqueekDelve {
         return _runs[runId];
     }
 
-    function leaderboard(uint256 id) external view returns (uint256[] memory ids, Best[] memory bests) {
-        ids = _boards[id];
-        bests = new Best[](ids.length);
-        for (uint256 i; i < ids.length; ++i) {
-            bests[i] = _best[id][ids[i]];
-        }
+    function progressOf(uint256 runId) external view returns (DelveRules.Progress memory) {
+        if (runId >= _runs.length) revert UnknownRun(runId);
+        return _load(_runs[runId].progress);
     }
 
-    function bestOf(uint256 id, uint256 tokenId) external view returns (Best memory) {
-        return _best[id][tokenId];
+    function leaderboard(uint256 season) external view returns (uint256[] memory ids, Best[] memory bests) {
+        return _board(season);
+    }
+
+    function allTimeBoard() external view returns (uint256[] memory ids, Best[] memory bests) {
+        return _board(ALL_TIME);
+    }
+
+    function bestOf(uint256 season, uint256 tokenId) external view returns (Best memory) {
+        return _best[season][tokenId];
     }
 
     function record(uint256 tokenId) external view returns (Record memory) {
@@ -318,19 +305,26 @@ contract SqueekDelve {
 
     // -------------------------------------------------------------- internal
 
-    function _crown(uint256 id) internal {
-        Expedition storage ex = _expeditions[id];
-        ex.crowned = true;
-        uint256[] storage board = _boards[id];
-        if (board.length == 0) return;
-        uint256 champ = board[0];
-        ++_records[champ].crowns;
-        emit Crowned(id, champ, _best[id][champ].score);
+    uint32 private _lastBossKills;
+
+    function _bossKillsBefore(Run storage, DelveRules.Progress memory) private view returns (uint32) {
+        return _lastBossKills;
     }
 
-    /// @dev Keeps the board sorted by best score, descending; on ties the earlier submission stays ahead.
-    function _updateBoard(uint256 id, uint256 tokenId, uint32 sc) internal {
-        uint256[] storage board = _boards[id];
+    function _board(uint256 key) internal view returns (uint256[] memory ids, Best[] memory bests) {
+        ids = _boards[key];
+        bests = new Best[](ids.length);
+        for (uint256 i; i < ids.length; ++i) {
+            bests[i] = _best[key][ids[i]];
+        }
+    }
+
+    /// @dev Keeps each board sorted by best score, descending; ties keep the earlier entry ahead.
+    function _submitBest(uint256 key, uint256 tokenId, Best memory b) internal {
+        Best storage cur = _best[key][tokenId];
+        if (cur.at != 0 && b.score <= cur.score) return;
+        _best[key][tokenId] = b;
+        uint256[] storage board = _boards[key];
         uint256 len = board.length;
         uint256 pos = len;
         for (uint256 i; i < len; ++i) {
@@ -342,16 +336,77 @@ contract SqueekDelve {
         if (pos == len) {
             if (len < BOARD_SIZE) {
                 board.push(tokenId);
-            } else if (sc > _best[id][board[len - 1]].score) {
+            } else if (b.score > _best[key][board[len - 1]].score) {
                 pos = len - 1;
                 board[pos] = tokenId;
             } else {
                 return;
             }
         }
-        while (pos > 0 && _best[id][board[pos - 1]].score < sc) {
+        while (pos > 0 && _best[key][board[pos - 1]].score < b.score) {
             (board[pos - 1], board[pos]) = (board[pos], board[pos - 1]);
             --pos;
         }
+    }
+
+    function _store(Run storage r, DelveRules.Progress memory p) internal {
+        Packed storage s = r.progress;
+        s.floor = uint16(p.floor);
+        s.hp = int32(p.hp);
+        s.maxHp = int32(p.maxHp);
+        s.atk = int32(p.atk);
+        s.def = int32(p.def);
+        s.weapon = uint8(p.weapon);
+        s.armor = uint8(p.armor);
+        s.sling = uint8(p.sling);
+        s.pebbles = uint32(p.pebbles);
+        s.crit = uint16(p.crit);
+        s.luck = uint32(p.luck);
+        s.goldPct = uint32(p.goldPct);
+        s.leech = int32(p.leech);
+        s.regen = int32(p.regen);
+        s.dodge = uint16(p.dodge);
+        s.vision = uint16(p.vision);
+        s.xp = uint32(p.xp);
+        s.lvl = uint16(p.lvl);
+        s.gold = uint64(p.gold);
+        s.kills = uint32(p.kills);
+        s.killScore = uint64(p.killScore);
+        s.bossKills = uint16(p.bossKills);
+        s.turn = uint32(p.turn);
+        s.rng = p.rng;
+        s.dead = p.dead;
+        s.fled = p.fled;
+        s.won = p.won;
+    }
+
+    function _load(Packed storage s) internal view returns (DelveRules.Progress memory p) {
+        p.floor = s.floor;
+        p.hp = s.hp;
+        p.maxHp = s.maxHp;
+        p.atk = s.atk;
+        p.def = s.def;
+        p.weapon = s.weapon;
+        p.armor = s.armor;
+        p.sling = s.sling;
+        p.pebbles = s.pebbles;
+        p.crit = s.crit;
+        p.luck = s.luck;
+        p.goldPct = s.goldPct;
+        p.leech = s.leech;
+        p.regen = s.regen;
+        p.dodge = s.dodge;
+        p.vision = s.vision;
+        p.xp = s.xp;
+        p.lvl = s.lvl;
+        p.gold = s.gold;
+        p.kills = s.kills;
+        p.killScore = s.killScore;
+        p.bossKills = s.bossKills;
+        p.turn = s.turn;
+        p.rng = s.rng;
+        p.dead = s.dead;
+        p.fled = s.fled;
+        p.won = s.won;
     }
 }
