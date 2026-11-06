@@ -2,6 +2,7 @@
 // never drift from the game's tables. Usage: node tools/gen-tables.mjs
 import { writeFileSync } from "node:fs";
 import { MONSTERS, WEAPONS, ARMORS, SLINGS } from "../web/engine.js";
+import { GLYPHS, ELEMENTS, PALETTES, PATTERNS, ILLUMINATIONS, EYES, EARS, BACKGROUNDS } from "../web/genes.js";
 
 // Binary search over the index keeps every lookup to a handful of comparisons.
 function tree(n, leaf, lo = 0, hi = n - 1, ind = "        ") {
@@ -11,6 +12,25 @@ function tree(n, leaf, lo = 0, hi = n - 1, ind = "        ") {
 }
 
 const fn = (name, ret, n, leaf) => `    function ${name}(uint256 i) internal pure returns (${ret}) {\n${tree(n, leaf)}    }\n`;
+
+// Gene tables: each row is [name, stat index, amount]; out-of-range options give no bonus.
+function geneFns() {
+  const tables = { glyph: GLYPHS, element: ELEMENTS, pattern: PATTERNS, illumination: ILLUMINATIONS, eyes: EYES, ears: EARS, background: BACKGROUNDS };
+  let out = "";
+  for (const [name, t] of Object.entries(tables)) {
+    out += `    /// @dev Gene option -> (stat index into DelveRules.genes, amount).\n`;
+    out += fn(name, "uint256 stat, int256 amount", t.length + 1,
+      (i) => (i < t.length ? `return (${t[i][1]}, ${t[i][2]}); // ${t[i][0]}` : `return (0, 0); // unknown option`)).replace(
+      "(uint256 i) internal pure returns (uint256 stat, int256 amount) {\n",
+      `(uint256 i) internal pure returns (uint256 stat, int256 amount) {\n        if (i > ${t.length}) i = ${t.length};\n`) + "\n";
+  }
+  out += `    /// @dev Palette option -> (element index, spectral flag that doubles it, known option).\n`;
+  out += fn("palette", "uint256 el, bool spectral, bool known", PALETTES.length + 1,
+    (i) => (i < PALETTES.length ? `return (${PALETTES[i][1]}, ${PALETTES[i][2] ? "true" : "false"}, true); // ${PALETTES[i][0]}` : `return (0, false, false); // unknown option`)).replace(
+    "(uint256 i) internal pure returns (uint256 el, bool spectral, bool known) {\n",
+    `(uint256 i) internal pure returns (uint256 el, bool spectral, bool known) {\n        if (i > ${PALETTES.length}) i = ${PALETTES.length};\n`);
+  return out;
+}
 
 const src = `// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
@@ -24,7 +44,8 @@ ${fn("monster", "uint256 beh, int256 hp, int256 atk, int256 sight, uint256 value
   (i) => { const m = MONSTERS[i]; return `return (${m.beh}, ${m.hp}, ${m.atk}, ${m.sight}, ${m.value}, ${m.minFloor}, ${m.drop}); // ${m.name}`; })}
 ${fn("weapon", "int256 atk, uint256 special", WEAPONS.length, (i) => `return (${WEAPONS[i].atk}, ${WEAPONS[i].special}); // ${WEAPONS[i].name}`)}
 ${fn("armorDef", "int256", ARMORS.length, (i) => `return ${ARMORS[i].def}; // ${ARMORS[i].name}`)}
-${fn("sling", "int256 dmg, int256 range", SLINGS.length, (i) => `return (${SLINGS[i].dmg}, ${SLINGS[i].range}); // ${SLINGS[i].name}`)}}
+${fn("sling", "int256 dmg, int256 range", SLINGS.length, (i) => `return (${SLINGS[i].dmg}, ${SLINGS[i].range}); // ${SLINGS[i].name}`)}
+${geneFns()}}
 `;
 writeFileSync(new URL("../src/DelveTables.sol", import.meta.url), src);
-console.log(`wrote src/DelveTables.sol: ${MONSTERS.length} monsters, ${WEAPONS.length} weapons, ${ARMORS.length} armors, ${SLINGS.length} slings`);
+console.log(`wrote src/DelveTables.sol: ${MONSTERS.length} monsters, ${WEAPONS.length} weapons, ${ARMORS.length} armors, ${SLINGS.length} slings, gene tables`);
