@@ -1,48 +1,102 @@
-// Generates test/fixtures/parity.json: runs played by the JS engine (web/engine.js), which the
-// Forge test replays through DelveRules.sol and must match exactly.
-// Usage: node tools/parity.mjs
+// Generates test/fixtures/parity.json from the JS engine (web/engine.js). The Forge tests replay
+// every case through DelveRules.sol, checkpoint by checkpoint, and require identical results.
+// Usage: node tools/parity.mjs   (needs Foundry's `cast` for the integration seed)
 import { writeFileSync } from "node:fs";
-import { W, FLOORS, simulate, genFloor } from "../web/engine.js";
-import { playBot } from "./bot.mjs";
+import { execSync } from "node:child_process";
+import {
+  FLOORS, ACT, newRun, step, isOver, genFloor, fromProgress, progressOf, score, PROGRESS_FIELDS,
+} from "../web/engine.js";
+import { botAction } from "./bot.mjs";
 
 let s0 = 0x5eed1234;
 const rand = () => ((s0 = (Math.imul(s0, 1664525) + 1013904223) >>> 0) / 2 ** 32);
+const hex = (a) => "0x" + Buffer.from(a).toString("hex");
+const MAX_CHUNK = 1500;
+
+/** Plays from state `s` with the bot until over or `maxTurns`, then flees so the tape ends cleanly. */
+function play(s, opts, maxTurns) {
+  const cuts = [];
+  while (!isOver(s) && s.tape.length < maxTurns) {
+    step(s, opts.junk ? Math.floor(rand() * 16) : botAction(s, { ...opts, rand }));
+    if (s.boundary) cuts.push(s.tape.length);
+  }
+  if (!isOver(s)) {
+    step(s, ACT.FLEE);
+    cuts.push(s.tape.length);
+  }
+  // Group whole floors into chunks of at most MAX_CHUNK actions (a long floor may be a chunk alone).
+  const chunks = [];
+  let from = 0;
+  let prev = 0;
+  for (const c of cuts) {
+    if (c - from > MAX_CHUNK && prev > from) {
+      chunks.push(s.tape.slice(from, prev));
+      from = prev;
+    }
+    prev = c;
+  }
+  chunks.push(s.tape.slice(from, prev));
+  return chunks.map(hex);
+}
+
+const out = (s) => ({ final: Object.fromEntries(PROGRESS_FIELDS.map((k) => [k, typeof s[k] === "boolean" ? s[k] : String(s[k])])), score: score(s) });
 
 const cases = [];
-for (let i = 0; i < 200; i++) {
+// Fresh runs from floor 1 with different bots, moods and levels.
+for (let i = 0; i < 36; i++) {
   const seed = Math.floor(rand() * 2 ** 32) >>> 0;
   const level = 1 + Math.floor(rand() * 10);
-  const mood = Math.floor(rand() * 4);
-  let tape;
-  if (i % 5 === 4) {
-    // random junk, including out-of-range action bytes
-    tape = Array.from({ length: 1 + Math.floor(rand() * 300) }, () => Math.floor(rand() * 16));
-  } else {
-    const opts = { useSling: i % 5 !== 1, noise: i % 5 === 2 ? 0.1 : 0, rand, fleeBelow: i % 5 === 3 ? 5 : 0 };
-    tape = playBot(seed, level, mood, opts).tape;
-  }
-  const r = simulate(seed, level, mood, tape);
-  cases.push({ seed, level, mood, tape: "0x" + Buffer.from(tape).toString("hex"), ...r });
+  const mood = i % 4;
+  const s = newRun(seed, level, mood);
+  const opts = { useSling: i % 3 !== 1, noise: i % 3 === 2 ? 0.08 : 0, junk: i % 9 === 8 };
+  const chunks = play(s, opts, 2500);
+  cases.push({ seed, mood, level, start: null, chunks, ...out(s) });
+}
+// Deep checkpoints: strong delvers dropped onto deep floors, to cover big maps, late monsters,
+// bosses (including the Cat Emperor on floor 200) and top-tier loot.
+const deepFloors = [37, 50, 79, 100, 123, 150, 160, 188, 199, 200];
+for (let i = 0; i < deepFloors.length * 2; i++) {
+  const floor = deepFloors[i % deepFloors.length];
+  const seed = Math.floor(rand() * 2 ** 32) >>> 0;
+  const mood = i % 4;
+  const strong = i % 2 === 0;
+  const start = {
+    ...progressOf(newRun(seed, 10, mood)),
+    floor, maxHp: strong ? 900 : 250, hp: strong ? 900 : 250, atk: strong ? 70 : 25, def: strong ? 12 : 4,
+    weapon: (i * 7) % 16, armor: (i * 5) % 12, sling: (i * 3) % 8, pebbles: 30, crit: 25, luck: 3,
+    goldPct: 40, leech: 2, regen: 4, dodge: 10, vision: 1, xp: 0, lvl: 30, turn: 1000,
+  };
+  const s = fromProgress(seed, mood, start);
+  const chunks = play(s, {}, 1800);
+  cases.push({ seed, mood, level: 10, start: Object.fromEntries(Object.entries(start).map(([k, v]) => [k, typeof v === "boolean" ? v : String(v)])), chunks, ...out(s) });
 }
 
 const layouts = [];
-for (let i = 0; i < 48; i++) {
+for (let i = 0; i < 60; i++) {
   const seed = Math.floor(rand() * 2 ** 32) >>> 0;
-  const floor = 1 + (i % FLOORS);
+  const floor = i < 20 ? 1 + i : 1 + Math.floor(rand() * FLOORS);
   const mood = i % 4;
   const f = genFloor(seed, floor, mood);
-  let open = 0n;
-  f.open.forEach((v, idx) => { if (v) open |= 1n << BigInt(idx); });
+  const words = new Array(Math.ceil((f.w * f.h) / 256)).fill(0n);
+  f.open.forEach((v, idx) => { if (v) words[idx >> 8] |= 1n << BigInt(idx & 255); });
   layouts.push({
-    seed, floor, mood, open: open.toString(), style: f.style,
-    pos: [f.start.x, f.start.y, f.stairs.x, f.stairs.y],
+    seed, floor, mood, open: words.map(String), style: f.style,
+    geo: [f.w, f.h, f.start.x, f.start.y, f.stairs.x, f.stairs.y],
     enemies: f.enemies.flatMap((e) => [e.kind, e.x, e.y, e.hp, e.atk]),
     items: f.items.flatMap((it) => [it.kind, it.x, it.y]),
   });
 }
 
-writeFileSync(new URL("../test/fixtures/parity.json", import.meta.url), JSON.stringify({ cases, layouts }, null, 1));
-const count = (f) => cases.filter(f).length;
-console.log(`cases=${cases.length} won=${count((c) => c.won)} dead=${count((c) => c.dead)} floor>=4=${count((c) => c.floor >= 4)} `
-  + `gear>0=${count((c) => c.weapon + c.armor + c.sling > 0)} maxTurns=${Math.max(...cases.map((c) => c.turns))} `
-  + `styles=${[0, 1, 2].map((st) => layouts.filter((l) => l.style === st).length).join("/")} W=${W}`);
+// Integration run for test/SqueekDelve.t.sol: the seed SqueekDelve.startRun derives when
+// prevrandao = 0x...beef, blockhash(n-1) = 0x...cafe, runId 0, tokenId 2, player = makeAddr("alice").
+const alice = execSync(`cast keccak "alice"`).toString().trim().slice(-40);
+const enc = execSync(`cast abi-encode "f(uint256,bytes32,uint256,uint256,address)" 0xbeef 0x${"cafe".padStart(64, "0")} 0 2 0x${alice}`).toString().trim();
+const iseed = Number(BigInt(execSync(`cast keccak ${enc}`).toString().trim()) & 0xffffffffn);
+const is = newRun(iseed, 9, 1);
+const ichunks = play(is, {}, 3000);
+const integration = { seed: iseed, level: 9, mood: 1, chunks: ichunks, ...out(is) };
+
+writeFileSync(new URL("../test/fixtures/parity.json", import.meta.url), JSON.stringify({ cases, layouts, integration }));
+const deepest = Math.max(...cases.map((c) => +c.final.floor));
+console.log(`cases=${cases.length} chunks=${cases.reduce((a, c) => a + c.chunks.length, 0)} dead=${cases.filter((c) => c.final.dead).length} `
+  + `won=${cases.filter((c) => c.final.won).length} deepest=${deepest} layouts=${layouts.length} integration floor ${is.floor} score ${score(is)} chunks ${ichunks.length}`);
