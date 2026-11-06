@@ -1,9 +1,10 @@
 import {
   FLOORS, ACT, MOOD, MOOD_INFO, MONSTERS, REGULAR_KINDS, BOSS_NAMES, ITEM, STYLE, WEAPONS, ARMORS, SLINGS,
-  SPECIAL_TEXT, BUFF_NAMES, BIOMES, CAVEIN_TURNS, PROGRESS_FIELDS,
+  SPECIAL_TEXT, BUFF_NAMES, BIOMES, CAVEIN_TURNS, PROGRESS_FIELDS, TRAP, TRAP_INFO, spikeDmg, mineDmg,
   newRun, step, isOver, isOpen, score, playerStats, playerAtk, playerDef, slingDmg, biomeOf, isBossFloor,
   bossAlive, xpToLevel, fromProgress, progressOf,
 } from "./engine.js";
+import { genes, STAT_KEYS, STAT_LABEL, HANDS, RARITIES, RARITY_COLORS } from "./genes.js";
 import { TILE, loadAtlas, recolor, rampFromSvg, drawFrame, has, iconStyle } from "./sprites.js";
 import { sfx, toggleMute, isMuted } from "./audio.js";
 import * as chain from "./chain.js";
@@ -12,10 +13,15 @@ import { EXPLORER } from "./config.js";
 // ------------------------------------------------------------------ setup
 
 const SCALE = 3;
-const VW = 20; // viewport, in tiles
 const VH = 13;
 const TOP = 18; // HUD rows (low-res px) above and below the world
 const BOTTOM = 18;
+// Viewport width in tiles, picked once at load so the stage fills wide screens instead of letterboxing.
+const VW = (() => {
+  const side = innerWidth > 1180 ? 430 : 0;
+  const ratio = (innerWidth - side - 48) / Math.max(320, innerHeight - 200);
+  return Math.max(20, Math.min(34, Math.round((ratio * (TOP + VH * TILE + BOTTOM)) / TILE)));
+})();
 const LO_W = VW * TILE;
 const VIEW_H = VH * TILE;
 const STEP_MS = 95;
@@ -57,6 +63,10 @@ const BIOME_FX = [
 const BOSS_SPRITE = { 17: "boss_tabby", 18: "boss_weasel", 19: "boss_owl", 20: "boss_serpent", 21: "boss_fox", 22: "boss_emperor" };
 const PROJ = { 3: "proj_web", 9: "proj_spit", 12: "proj_feather", 19: "proj_feather" };
 const SLOT_ICON = { weapon: "wpn_", armor: "arm_", sling: "sl_" };
+const LOOT_SPRITE = { [ITEM.SEED]: "seed", [ITEM.CHEESE]: "cheese", [ITEM.PEBBLES]: "pebblepile", [ITEM.GEM]: "gem", [ITEM.BERRY]: "berry", [ITEM.SHROOM]: "shroom", [ITEM.XPORB]: "xporb" };
+const LOOT_GLOW = { [ITEM.SEED]: [255, 220, 120], [ITEM.GEM]: [255, 90, 110], [ITEM.SHROOM]: [120, 255, 200], [ITEM.XPORB]: [120, 200, 255] };
+const TRAP_SPRITE = { [TRAP.SPIKE]: "trap_spike", [TRAP.MINE]: "trap_mine", [TRAP.SNARE]: "trap_snare" };
+const SHROOM_TEXT = [["ATK +1", "#ffd2a0"], ["DEF +1", "#9fc6ff"], ["CRIT +5%", "#ffe08a"], ["BAD SHROOM!", "#c58cff"]];
 
 const app = {
   atlas: null, hero: null,
@@ -64,7 +74,7 @@ const app = {
   run: null, ranked: null, pending: [], cuts: [], chainTurn: 0,
   nft: null, squeeks: new Map(), token: null, season: null, mood: null,
   cam: { x: 0, y: 0 }, heroPos: { x: 0, y: 0 }, lunge: { x: 0, y: 0 }, squash: 1, facingLeft: false,
-  enemyPos: [], enemyFlash: [], explored: null, seenBoss: false,
+  enemyPos: [], enemyFlash: [], explored: null, seenBoss: false, trapAnim: new Map(),
   fx: [], parts: [], texts: [], toasts: [], shake: 0, flash: 0, fade: 0, banner: null,
   lastInput: 0, queued: null, replay: null, aim: false, saving: false,
   title: null,
@@ -89,6 +99,7 @@ function resetPresentation(snap = true) {
   app.explored = new Uint8Array(s.w * s.h);
   app.fx = [];
   app.parts = [];
+  app.trapAnim = new Map();
   app.seenBoss = false;
   updateExplored();
   if (snap) { const c = camTarget(); app.cam = { ...c }; }
@@ -220,6 +231,15 @@ function drawWorld(s, t, { reveal = false, hero = true } = {}) {
   }
 
   const vis = (x, y) => reveal || visible(s, x, y);
+  // Traps: visible once their tile has been seen; a spike plate shows its spikes for a moment after it fires.
+  for (const tr of s.traps ?? []) {
+    const idx = tr.y * s.w + tr.x;
+    if (s.trapOcc[idx] !== tr.kind || !seen(tr.x, tr.y)) continue;
+    const sprung = (app.trapAnim.get(idx) ?? 0) > t;
+    const f = tr.kind === TRAP.SPIKE ? (sprung ? 1 : 0) : tr.kind === TRAP.MINE ? Math.floor(t / 300) % 2 : 0;
+    drawFrame(w, A, `${TRAP_SPRITE[tr.kind]}_${f}`, tr.x * TILE, tr.y * TILE);
+    if (tr.kind === TRAP.MINE && f && vis(tr.x, tr.y)) lights.push({ x: tr.x * 16 + 8, y: tr.y * 16 + 8, r: 9, c: [255, 60, 50], a: 0.6 });
+  }
   // Items.
   for (const it of s.items) {
     if (it.taken || !vis(it.x, it.y)) continue;
@@ -232,9 +252,10 @@ function drawWorld(s, t, { reveal = false, hero = true } = {}) {
       drawFrame(w, A, n, px, py);
       lights.push({ x: px + 8, y: py + 8, r: it.kind === ITEM.BOSS_CHEST ? 30 : 18, c: [255, 210, 110], a: 0.45 + Math.sin(t / 300 + it.x) * 0.15 });
     } else {
-      const bob = Math.round(Math.sin(t / 260 + it.x) * 1);
-      drawFrame(w, A, it.kind === ITEM.SEED ? "seed" : "cheese", px, py + bob);
-      if (it.kind === ITEM.SEED) lights.push({ x: px + 8, y: py + 8, r: 10, c: [255, 220, 120], a: 0.25 });
+      const bob = it.kind === ITEM.PEBBLES ? 0 : Math.round(Math.sin(t / 260 + it.x) * 1);
+      drawFrame(w, A, LOOT_SPRITE[it.kind] ?? "cheese", px, py + bob);
+      const glow = LOOT_GLOW[it.kind];
+      if (glow) lights.push({ x: px + 8, y: py + 8, r: it.kind === ITEM.XPORB ? 14 : 10, c: glow, a: it.kind === ITEM.SEED ? 0.25 : 0.4 + Math.sin(t / 240 + it.y) * 0.12 });
     }
   }
 
@@ -252,6 +273,7 @@ function drawWorld(s, t, { reveal = false, hero = true } = {}) {
     if (boss && e.hp * 3 < e.maxHp) lights.push({ x: p.x + 8, y: p.y + 6, r: 34, c: [255, 40, 40], a: 0.6 + Math.sin(t / 120) * 0.2 });
     drawFrame(w, A, spriteFor(e.kind, frame), p.x + ox, p.y + oy, { flip, alpha: flash ? 0.4 : 1 });
     if (e.beh === 4) lights.push({ x: p.x + 8, y: p.y + 10, r: 12, c: [255, 120, 40], a: 0.5 + Math.sin(t / 90) * 0.2 });
+    if (e.stun > 0) drawFrame(w, A, `stun_${Math.floor(t / 200) % 2}`, p.x, p.y + oy - 7);
     if (e.hp < e.maxHp && !boss) {
       w.fillStyle = "#1a0b10"; w.fillRect(p.x + 2, p.y - 3, 12, 2);
       w.fillStyle = "#ff5a6a"; w.fillRect(p.x + 2, p.y - 3, Math.max(1, Math.ceil(12 * e.hp / e.maxHp)), 2);
@@ -265,7 +287,14 @@ function drawWorld(s, t, { reveal = false, hero = true } = {}) {
     w.fillStyle = "rgba(0,0,0,0.35)";
     w.beginPath(); w.ellipse(hx + 8, hy + 14, 6, 2.5, 0, 0, Math.PI * 2); w.fill();
     if (app.mode === "end" && s.dead) drawFrame(w, A, "grave", app.heroPos.x, app.heroPos.y);
-    else drawFrame(w, A, `hero_${frame}`, hx, hy, { flip: app.facingLeft, src: app.hero?.[`hero_${frame}`], scaleY: app.squash });
+    else {
+      const o = { flip: app.facingLeft, scaleY: app.squash };
+      drawFrame(w, A, `hero_${frame}`, hx, hy, { ...o, src: app.hero?.[`hero_${frame}`] });
+      // Worn gear is drawn on the delver: armor over the body, then the weapon in its paw.
+      if (s.armor > 0) drawFrame(w, A, `eq_arm_${s.armor}_${frame}`, hx, hy, o);
+      drawFrame(w, A, `eq_wpn_${s.weapon}_${frame}`, hx, hy, o);
+      if (s.stun > 0) drawFrame(w, A, `stun_${Math.floor(t / 200) % 2}`, hx, hy - 7);
+    }
   }
   const fl = Math.sin(t / 90) * 2 + Math.sin(t / 37) * 1.2;
   lights.push({ x: hx + 8, y: hy + 6, r: (reveal ? 9 : visionRadius(s)) * TILE + fl, c: fxb.torch, a: 1, torch: true });
@@ -393,6 +422,7 @@ function drawHud(s, t) {
   if (!isOver(s) && left < 60) text(left > 0 ? `CAVE-IN IN ${left}` : "THE BURROW IS COLLAPSING!", screen.width / 2, top + 10, { size: 12, align: "center", color: left > 20 ? "#ffcf7a" : "#ff5a6a" });
   if (app.ranked && app.cuts.length && app.mode === "play") text(`${app.cuts.length} FLOOR${app.cuts.length > 1 ? "S" : ""} NOT SAVED · PRESS C`, 14, by - 26, { size: 9, color: "#F5C451" });
   if (app.aim) text("AIM: PICK A DIRECTION", screen.width / 2, by - 26, { size: 10, align: "center", color: "#ffe08a" });
+  else if (s.stun > 0 && !isOver(s)) text(`SNARED · ${s.stun} TURN${s.stun > 1 ? "S" : ""} STUCK`, screen.width / 2, by - 26, { size: 10, align: "center", color: "#d7d0ff" });
 
   // Boss bar.
   if (bossAlive(s) && app.seenBoss) {
@@ -692,6 +722,52 @@ function applyEvents(ev) {
         burst(e.x * TILE + 8, e.y * TILE + 8, [255, 140, 50], 24, { speed: 1.6, life: 700, glow: true });
         app.shake = 380;
         break;
+      case "pebbles":
+        sfx("seed");
+        app.texts.push({ text: `+${e.value} PEBBLES`, x: e.x * TILE, y: e.y * TILE, color: "#f3e6c8", t: 0 });
+        break;
+      case "gem":
+        sfx("loot");
+        burst(e.x * TILE + 8, e.y * TILE + 8, [255, 110, 130], 10, { speed: 0.9, life: 500, glow: true, up: 0.3 });
+        app.texts.push({ text: `GEM +${e.value}`, x: e.x * TILE, y: e.y * TILE, color: "#ff9db0", t: 0, big: true });
+        break;
+      case "berry":
+        sfx("heal");
+        app.fx.push({ kind: "heal", frames: 2, x: e.x * TILE, y: e.y * TILE, t: 0, life: 500 });
+        app.texts.push({ text: `+1 MAX HP · +${e.value}HP`, x: e.x * TILE, y: e.y * TILE, color: "#ff9db0", t: 0 });
+        break;
+      case "shroom": {
+        const [txt, col] = SHROOM_TEXT[e.effect];
+        sfx(e.effect === 3 ? "hurt" : "heal");
+        burst(e.x * TILE + 8, e.y * TILE + 8, e.effect === 3 ? [190, 120, 255] : [120, 255, 200], 10, { speed: 0.7, life: 600, glow: true, up: 0.3 });
+        app.texts.push({ text: txt, x: e.x * TILE, y: e.y * TILE, color: col, t: 0 });
+        break;
+      }
+      case "xporb":
+        sfx("levelup");
+        burst(e.x * TILE + 8, e.y * TILE + 8, [120, 200, 255], 12, { speed: 0.8, life: 600, glow: true, up: 0.4 });
+        app.texts.push({ text: `+${e.value} XP`, x: e.x * TILE, y: e.y * TILE, color: "#8fd3ff", t: 0 });
+        break;
+      case "trap": {
+        const who = e.i < 0 ? "YOU" : (s.enemies[e.i]?.kind >= REGULAR_KINDS ? BOSS_NAMES[s.enemies[e.i].kind] : MONSTERS[s.enemies[e.i]?.kind]?.name ?? "IT").toUpperCase();
+        if (e.kind === TRAP.SPIKE) {
+          sfx("attack");
+          app.trapAnim.set(e.y * s.w + e.x, performance.now() + 450);
+          burst(e.x * TILE + 8, e.y * TILE + 10, [210, 210, 225], 6, { speed: 0.9, life: 300 });
+        } else if (e.kind === TRAP.SNARE) {
+          sfx("bump");
+          burst(e.x * TILE + 8, e.y * TILE + 10, [235, 235, 245], 8, { speed: 0.6, life: 500 });
+          app.texts.push({ text: e.i < 0 ? "SNARED!" : `${who} SNARED!`, x: e.x * TILE, y: e.y * TILE - 10, color: "#d7d0ff", t: 0 });
+        }
+        if (e.i < 0 && !app.trapTip?.[e.kind]) {
+          app.trapTip = { ...app.trapTip, [e.kind]: true };
+          toast("icon_trap", TRAP_INFO[e.kind].name.toUpperCase(), TRAP_INFO[e.kind].text.toUpperCase().slice(0, 60), "#d7d0ff");
+        }
+        break;
+      }
+      case "stuck":
+        app.texts.push({ text: "STUCK!", x: s.px * TILE, y: s.py * TILE - 6, color: "#d7d0ff", t: 0 });
+        break;
       case "miss":
         app.texts.push({ text: "DODGE!", x: s.px * TILE, y: s.py * TILE - 6, color: "#bdf5c9", t: 0 });
         break;
@@ -751,8 +827,8 @@ function doAction(a) {
   if (isOver(s)) setTimeout(() => endRun(), app.mode === "replay" ? 1500 : 800);
 }
 
-function beginRun(seed, level, mood, ranked = null) {
-  app.run = newRun(seed, level, mood);
+function beginRun(seed, level, mood, ranked = null, word = null, start = null) {
+  app.run = start ? fromProgress(seed, mood, start) : newRun(seed, level, mood, word);
   app.ranked = ranked;
   app.pending = [];
   app.cuts = [];
@@ -771,7 +847,7 @@ function beginRun(seed, level, mood, ranked = null) {
 
 function startPractice() {
   const sq = app.token ? app.squeeks.get(app.token) : null;
-  beginRun(randomSeed(), sq?.level ?? 1, app.mood ?? MOOD.POTTER, null);
+  beginRun(randomSeed(), sq?.level ?? 1, app.mood ?? MOOD.POTTER, null, sq?.word ?? null);
   // ?practiceFloor=N starts practice deeper (with matching gear), to preview later biomes.
   const deep = Number(new URLSearchParams(location.search).get("practiceFloor"));
   if (deep > 1 && deep <= FLOORS) {
@@ -797,9 +873,10 @@ async function startRanked() {
     const ev = events.find((e) => e.eventName === "RunStarted");
     if (!ev) throw new Error("RunStarted event not found in the receipt.");
     const { runId, seed, level, mood, tokenId } = ev.args;
-    const info = await chain.read("run", [runId]);
+    // The contract decides the starting stats (level + traits); start from exactly what it stored.
+    const [info, p] = await Promise.all([chain.read("run", [runId]), chain.read("progressOf", [runId])]);
     setPanelStatus(`Ranked run ${runId} started: a fresh burrow, ${MOOD_INFO[mood].name} mood.`);
-    beginRun(Number(seed), Number(level), Number(mood), { runId, seed: Number(seed), level: Number(level), mood: Number(mood), tokenId, startBlock: info.startBlock });
+    beginRun(Number(seed), Number(level), Number(mood), { runId, seed: Number(seed), level: Number(level), mood: Number(mood), tokenId, startBlock: info.startBlock }, null, chainProgress(p));
     saveLocal();
     refreshSqueek(app.token);
   } catch (e) { setPanelStatus(esc(e.shortMessage ?? e.message), true); }
@@ -1017,7 +1094,8 @@ async function startReplay(runId, tokenId) {
     const tapes = await chain.runTape(runId, info.startBlock);
     if (!tapes.length) throw new Error("No checkpoints found for this run.");
     const tape = tapes.flatMap(hexToBytes);
-    app.run = newRun(Number(info.seed), Number(info.level), Number(info.mood));
+    const word = await chain.read("traitWordOf", [info.tokenId]);
+    app.run = newRun(Number(info.seed), Number(info.level), Number(info.mood), word);
     app.ranked = null;
     app.mode = "replay";
     app.replay = { tokenId, runId, tape, i: 0, speed: 2 };
@@ -1121,6 +1199,10 @@ async function selectSqueek(id) {
   const sq = app.squeeks.get(id);
   if (!sq?.ok) return;
   app.token = id;
+  if (sq.word === undefined) {
+    try { sq.word = await chain.read("traitWordOf", [id]); } catch { sq.word = null; }
+    sq.genes = genes(sq.word);
+  }
   if (!sq.art && app.nft) {
     sq.art = await chain.squeekArt(app.nft, id);
     sq.ramp = sq.art ? rampFromSvg(sq.art.svg) : null;
@@ -1160,18 +1242,25 @@ async function renderDelver() {
     `<button class="chip ${app.token === id ? "on" : ""}" data-sq="${id}" ${s.ok ? "" : "disabled title=\"Not held by this wallet\""}>#${id} <i>L${s.level}</i></button>`).join("");
   let card = "";
   if (sq) {
-    const st = playerStats(sq.level);
+    const st = progressOf(newRun(1, sq.level, MOOD.POTTER, sq.word));
+    const gn = sq.genes;
     const left = 3 - (sq.started ?? 0);
+    const bonus = gn ? STAT_KEYS.map((k, i) => [k, gn.bonus[i]]).filter(([, v]) => v).map(([k, v]) => `<span class="tag">+${v} ${STAT_LABEL[k]}</span>`).join("") : "";
+    const traits = gn ? `
+      <div class="traits"><b style="color:${RARITY_COLORS[gn.tier]}">${RARITIES[gn.tier].toUpperCase()}</b>
+        <span class="muted">· ${HANDS[gn.hand]} · ${esc(gn.glyphs.join(" "))} · ${esc(gn.palette)}</span></div>
+      <div class="tags">${bonus}</div>` : `<p class="small muted">Traits not readable yet (unrevealed?). Base stats only.</p>`;
     card = `
       <div class="delver">
         <div class="portrait">${sq.art ? `<img alt="Squeek #${app.token}" src="${sq.art.image}">` : ""}</div>
         <div>
           <b>SQUEEK #${app.token}</b>
-          <div class="small">Level ${sq.level} · ${st.maxHp} HP · ${st.atk + 1} ATK</div>
+          <div class="small">Level ${sq.level} · ${st.maxHp} HP · ${st.atk + 1} ATK · ${st.def} DEF · ${st.crit}% CRIT</div>
           <div class="small muted">Runs ${sq.rec?.runs ?? 0} · Deepest B${sq.rec?.deepest ?? 0} · Bosses ${sq.rec?.bossKills ?? 0}</div>
           <div class="small muted">Best ${sq.rec?.bestScore ?? 0} · Wins ${sq.rec?.victories ?? 0} · Crowns ${sq.rec?.crowns ?? 0}</div>
         </div>
       </div>
+      ${traits}
       <button class="px-btn gold wide" id="rankedSide" ${left > 0 ? "" : "disabled"}>RANKED RUN (${left}/3 TODAY)</button>`;
   }
   el.innerHTML = `${card}<div id="pending"></div><div class="chips">${chips}</div>
@@ -1198,7 +1287,11 @@ function renderCodex() {
   const gear = [...WEAPONS.map((x, i) => [`wpn_${i}`, `${x.name} · ATK ${x.atk}${x.special ? " · " + SPECIAL_TEXT[x.special] : ""}`]),
     ...ARMORS.slice(1).map((x, i) => [`arm_${i + 1}`, `${x.name} · DEF ${x.def}`]),
     ...SLINGS.map((x, i) => [`sl_${i}`, `${x.name} · ${x.dmg} dmg, range ${x.range}`]),
-    ...Object.entries(BUFF_NAMES).map(([k, n]) => [k, n])].map(([n, t]) => `<span class="cx-item" title="${esc(t)}">${ico(n, 2)}</span>`).join("");
+    ...Object.entries(BUFF_NAMES).map(([k, n]) => [k, n]),
+    ["pebblepile", "Pebble pile · +3 pebbles (more deeper)"], ["gem", "Ruby · 5× a seed's worth"], ["berry", "Wild berry · +1 max HP and a small heal"],
+    ["shroom", "Cave shroom · ATK+1, DEF+1 or CRIT+5%… or a bellyache"], ["xporb", "Memory orb · XP"],
+    ["trap_spike_1", `${TRAP_INFO[1].name} · ${TRAP_INFO[1].text}`], ["trap_mine_1", `${TRAP_INFO[2].name} · ${TRAP_INFO[2].text}`],
+    ["trap_snare_0", `${TRAP_INFO[3].name} · ${TRAP_INFO[3].text}`]].map(([n, t]) => `<span class="cx-item" title="${esc(t)}">${ico(n, 2)}</span>`).join("");
   $("codex").innerHTML = `<div class="cx-grid">${mons}</div><p class="small muted">Hover to inspect. Deeper floors roll better tiers.</p><div class="cx-items">${gear}</div>`;
 }
 

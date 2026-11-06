@@ -2,7 +2,7 @@
 
 export const TILE = 16;
 const FUR = ["#E8B07A", "#C98A54", "#8A5A34"]; // light, mid, dark placeholders in hero frames
-const SHEETS = ["sprites", "monsters", "items", "biomes"];
+const SHEETS = ["sprites", "monsters", "items", "biomes", "gear", "traps"];
 
 const hexToRgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
 const mix = (a, b, t) => a.map((v, i) => Math.round(v + (b[i] - v) * t));
