@@ -24,9 +24,11 @@ contract DelveParityTest is Test {
         uint32 seed = uint32(vm.parseJsonUint(json, string.concat(k, ".seed")));
         uint8 mood = uint8(vm.parseJsonUint(json, string.concat(k, ".mood")));
         uint8 level = uint8(vm.parseJsonUint(json, string.concat(k, ".level")));
-        p = vm.keyExistsJson(json, string.concat(k, ".start.floor"))
-            ? ProgressJson.read(json, string.concat(k, ".start"))
-            : rules.init(level, seed);
+        if (vm.keyExistsJson(json, string.concat(k, ".start.floor"))) {
+            p = ProgressJson.read(json, string.concat(k, ".start"));
+        } else {
+            (p,,) = rules.start(level, seed, vm.parseJsonUint(json, string.concat(k, ".word")));
+        }
         bytes[] memory chunks = vm.parseJsonBytesArray(json, string.concat(k, ".chunks"));
         for (uint256 c; c < chunks.length; ++c) {
             uint256 g = gasleft();
@@ -49,6 +51,33 @@ contract DelveParityTest is Test {
             if (g > worst) worst = g;
         }
         emit log_named_uint("heaviest advance() in fixtures (gas)", worst);
+    }
+
+    /// Starting stats from real Squeek traits (every Epic and Legendary plus a sample).
+    function test_genesMatchJsEngine() public view {
+        uint256 n = _count(".genes");
+        assertGt(n, 500);
+        for (uint256 i; i < n; ++i) {
+            string memory k = string.concat(".genes[", vm.toString(i), "]");
+            uint256 word = vm.parseUint(vm.parseJsonString(json, string.concat(k, ".word")));
+            (int256[11] memory b, uint8 tier, uint8 hand) = rules.genes(word);
+            int256[] memory want = vm.parseJsonIntArray(json, string.concat(k, ".bonus"));
+            for (uint256 j; j < 11; ++j) {
+                assertEq(b[j], want[j], string.concat(k, " bonus"));
+            }
+            assertEq(tier, vm.parseJsonUint(json, string.concat(k, ".tier")), string.concat(k, " tier"));
+            assertEq(hand, vm.parseJsonUint(json, string.concat(k, ".hand")), string.concat(k, " hand"));
+            (DelveRules.Progress memory p,,) = rules.start(
+                uint8(vm.parseJsonUint(json, string.concat(k, ".level"))),
+                uint32(vm.parseJsonUint(json, string.concat(k, ".seed"))),
+                word
+            );
+            assertEq(
+                abi.encode(p),
+                abi.encode(ProgressJson.read(json, string.concat(k, ".start"))),
+                string.concat(k, " start")
+            );
+        }
     }
 
     function test_layoutsMatchJsEngine() public view {
