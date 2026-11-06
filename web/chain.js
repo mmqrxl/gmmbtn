@@ -1,9 +1,9 @@
 // Chain access: Sepolia reads, simulated writes, and replay logs.
 import {
-  createPublicClient, createWalletClient, custom, http, getAddress, isAddress, parseAbiItem,
+  createPublicClient, createWalletClient, custom, http, getAddress, isAddress, parseAbiItem, parseEventLogs,
 } from "https://esm.sh/viem@2.21.0";
 import { sepolia } from "https://esm.sh/viem@2.21.0/chains";
-import { GAME_ABI } from "./abi.js";
+import { GAME_ABI, RULES_ABI } from "./abi.js";
 import { GAME_ADDRESS, DEPLOY_BLOCK, RPC_URL, API_BASE } from "./config.js";
 
 const params = new URLSearchParams(location.search);
@@ -16,12 +16,19 @@ export const pub = createPublicClient({ chain: sepolia, transport: http(params.g
 const NFT_ABI = [
   { type: "function", name: "tokenURI", stateMutability: "view", inputs: [{ type: "uint256" }], outputs: [{ type: "string" }] },
 ];
-const RUN_EVENT = parseAbiItem(
-  "event RunSubmitted(uint256 indexed expeditionId, uint256 indexed tokenId, address indexed player, uint8 attempt, uint8 level, uint32 score, uint8 floor, uint16 kills, bool won, bool dead, bytes tape)",
+const SUBMIT_EVENT = parseAbiItem(
+  "event RunSubmitted(uint256 indexed runId, uint256 indexed expeditionId, uint256 indexed tokenId, address player, uint32 score, uint8 floor, uint16 kills, bool won, bool dead, bytes tape)",
 );
 
 export const read = (functionName, args = []) =>
   pub.readContract({ address: gameAddress, abi: GAME_ABI, functionName, args });
+
+let rulesAddress = null;
+/** Calls the DelveRules contract the game verifies runs with. */
+export async function rules(functionName, args = []) {
+  rulesAddress ??= await read("rules");
+  return pub.readContract({ address: rulesAddress, abi: RULES_ABI, functionName, args });
+}
 
 let wallet = null;
 export let account = null;
@@ -39,16 +46,17 @@ export async function connectWallet() {
   return account;
 }
 
-/** Simulate from the signer first, then ask the wallet to sign. */
+/** Simulate from the signer first, then ask the wallet to sign. Returns the receipt and decoded logs. */
 export async function write(functionName, args, onStatus) {
   onStatus?.("Simulating…");
-  const { request, result } = await pub.simulateContract({ address: gameAddress, abi: GAME_ABI, functionName, args, account });
+  const { request } = await pub.simulateContract({ address: gameAddress, abi: GAME_ABI, functionName, args, account });
   onStatus?.("Confirm in your wallet…");
   const hash = await wallet.writeContract(request);
   onStatus?.("Waiting for confirmation…", hash);
   const receipt = await pub.waitForTransactionReceipt({ hash });
   if (receipt.status !== "success") throw new Error(`Transaction reverted (${hash})`);
-  return { hash, result };
+  const events = parseEventLogs({ abi: GAME_ABI, logs: receipt.logs });
+  return { hash, receipt, events };
 }
 
 /** Squeek IDs the API suggests for an address; eligibility is always re-checked onchain. */
@@ -78,20 +86,16 @@ export async function squeekArt(nftAddress, tokenId) {
   } catch { return null; }
 }
 
-/** The best submitted tape for a Squeek in an expedition, from RunSubmitted logs. */
-export async function bestTape(expeditionId, tokenId) {
-  // Expeditions last 2 hours (~600 Sepolia blocks), so a short recent window covers the open one.
+/** The submitted tape of a run, from its RunSubmitted log. */
+export async function runTape(runId) {
+  // Expeditions plus their grace last 2.5 hours (~750 Sepolia blocks); search a recent window.
   const latest = await pub.getBlockNumber();
   const recent = latest > 5000n ? latest - 5000n : 0n;
-  const from = BigInt(DEPLOY_BLOCK || 0) > recent ? BigInt(DEPLOY_BLOCK) : recent;
+  const deploy = BigInt(DEPLOY_BLOCK || 0);
   const logs = await pub.getLogs({
-    address: gameAddress, event: RUN_EVENT, args: { expeditionId, tokenId }, fromBlock: from, toBlock: latest,
+    address: gameAddress, event: SUBMIT_EVENT, args: { runId }, fromBlock: deploy > recent ? deploy : recent, toBlock: latest,
   });
-  let best = null;
-  for (const l of logs) {
-    if (!best || l.args.score > best.score) best = { ...l.args, tx: l.transactionHash };
-  }
-  return best;
+  return logs.length ? logs[logs.length - 1].args.tape : null;
 }
 
 export async function liveWheel() {
