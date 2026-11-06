@@ -1,13 +1,15 @@
 // Squeek Delve rules engine. Deterministic and integer-only.
 // src/DelveRules.sol re-implements these rules exactly to verify runs onchain, floor by floor;
 // any change here must be mirrored there (tools/parity.mjs + test/DelveParity.t.sol check it).
-// Data tables are shared: tools/gen-tables.mjs writes src/DelveTables.sol from the tables below.
+// Data tables are shared: tools/gen-tables.mjs writes src/DelveTables.sol from the tables below
+// (and from web/genes.js, which turns a Squeek's onchain traits into starting stats).
+import { genes, STAT_KEYS } from "./genes.js";
 
 export const FLOORS = 200;
 export const MAX_W = 47;
 export const MAX_H = 35;
 export const MAX_ENEMIES = 40;
-export const MAX_ITEMS = 48;
+export const MAX_ITEMS = 64;
 export const CAVEIN_TURNS = 300;
 export const BOSS_EVERY = 10;
 const PLACE_TRIES = 100;
@@ -25,7 +27,11 @@ export const MOOD_INFO = [
   { name: "Zoomies", emoji: "⚡", text: "Full sprint! One extra monster per floor, but every seed is worth double." },
 ];
 export const STYLE = { CAVE: 0, ROOMS: 1, MIXED: 2 };
-export const ITEM = { SEED: 0, CHEESE: 1, CHEST: 2, BOSS_CHEST: 3 };
+export const ITEM = {
+  SEED: 0, CHEESE: 1, CHEST: 2, BOSS_CHEST: 3, PEBBLES: 4, GEM: 5, BERRY: 6, SHROOM: 7, XPORB: 8,
+  WEAPON: 9, ARMOR: 10, SLING: 11, CHARM: 12,
+};
+const DROP_KINDS = [ITEM.CHEST, ITEM.CHEESE, ITEM.GEM, ITEM.PEBBLES];
 export const BEH = { CHASE: 0, FAST: 1, SLOW: 2, RANGED: 3, BOMB: 4, REGEN: 5 };
 export const BIOMES = ["Topsoil", "Rootclay", "Crystal Deep", "Fungal Grotto", "Frost Hollow", "Magma Vent", "Sunken Ruins", "Void Burrow"];
 
@@ -106,9 +112,10 @@ export function bossKind(floor) {
   if (floor === FLOORS) return EMPEROR;
   return 17 + ((floor / BOSS_EVERY - 1) % 5);
 }
+/** Base stats from a Squeek's merge level (1..10). */
 export const playerStats = (level) => {
   const l = Math.min(10, Math.max(1, level));
-  return { maxHp: 10 + 2 * l, atk: 1 + Math.floor(l / 3) };
+  return { maxHp: 10 + 3 * l, atk: 1 + Math.floor(l / 2), def: Math.floor((l - 1) / 3), crit: 5 + l };
 };
 export const scaledHp = (kind, floor) => Math.max(1, Math.floor((MONSTERS[kind].hp * (100 + 12 * (floor - 1))) / 100));
 export const scaledAtk = (kind, floor) => MONSTERS[kind].atk + Math.floor((floor - 1) / 4);
@@ -227,35 +234,56 @@ export function genFloor(seed, floor, mood) {
     enemies.push({ kind, beh: m.beh, x: p[0], y: p[1], hp, maxHp: hp, atk: scaledAtk(kind, floor), alive: true });
     enemyOcc[p[1] * W + p[0]] = enemies.length;
   }
-  const addItems = (kind, n, minDist) => {
+  const addItems = (kind, n, minDist, val = 0) => {
     for (let k = 0; k < n; k++) {
       const p = place(minDist);
       if (!p) continue;
-      items.push({ kind, x: p[0], y: p[1], taken: false });
+      items.push({ kind, x: p[0], y: p[1], val, taken: false });
       itemOcc[p[1] * W + p[0]] = items.length;
     }
   };
   addItems(ITEM.SEED, 3 + Math.floor(area / 90) + (next() % 3), 1);
   addItems(ITEM.CHEESE, 1 + Math.min(3, Math.floor(floor / 20)) + (floor >= 3 ? next() % 2 : 0), 1);
   addItems(ITEM.CHEST, 1 + Math.floor(area / 250) + (next() % 2) + (mood === MOOD.JOG ? 1 : 0), 2);
+  addItems(ITEM.PEBBLES, 1 + Math.floor(area / 300), 1);
+  addItems(ITEM.GEM, (floor >= 2 && next() % 3 === 0 ? 1 : 0) + Math.floor(area / 600), 1);
+  addItems(ITEM.BERRY, next() % 2, 1);
+  addItems(ITEM.SHROOM, floor >= 3 ? next() % 2 : 0, 1);
+  addItems(ITEM.XPORB, 1 + Math.min(2, Math.floor(floor / 25)), 1);
+  const r = next() % 100;
+  if (r < 30) {
+    const slot = next() % 3;
+    const val = rollTier(GEAR[slot].cap, GEAR[slot].div, floor, 0, next());
+    addItems(ITEM.WEAPON + slot, 1, 2, val);
+  } else if (r < 45) {
+    addItems(ITEM.CHARM, 1, 2, next() % 12);
+  }
 
   return { w: W, h: H, style, boss, open, enemyOcc, itemOcc, start: { x: startX, y: startY }, stairs: { x: sx, y: sy }, enemies, items };
 }
 
 // ------------------------------------------------------------------ state
 
-/** A fresh run. The state at a floor boundary is all the contract needs to store. */
-export function newRun(seed, level, mood) {
-  const { maxHp, atk } = playerStats(level);
+/** A fresh run. `word` is the Squeek's traitWord (or null). The state at a floor boundary is all
+ *  the contract needs to store. */
+export function newRun(seed, level, mood, word = null) {
+  const { maxHp, atk, def, crit } = playerStats(level);
   const s = {
     seed: seed >>> 0, level, mood,
-    floor: 1, hp: maxHp, maxHp, atk, def: 0, weapon: 0, armor: 0, sling: 0, pebbles: 5, crit: 5,
+    floor: 1, hp: maxHp, maxHp, atk, def, weapon: 0, armor: 0, sling: 0, pebbles: 5, crit,
     luck: 0, goldPct: 0, leech: 0, regen: 0, dodge: 0, vision: 0, xp: 0, lvl: 1,
     gold: 0, kills: 0, killScore: 0, bossKills: 0, turn: 0, floorTurn: 0,
     rng: (seed ^ 0x85ebca6b) >>> 0 || 1,
     dead: false, fled: false, won: false,
     tape: [], boundary: true,
   };
+  const g = genes(word);
+  if (g) {
+    STAT_KEYS.forEach((k, i) => { s[k] += g.bonus[i]; });
+    s.crit = Math.min(60, s.crit);
+    s.dodge = Math.min(40, s.dodge);
+    s.hp = s.maxHp;
+  }
   enterFloor(s);
   return s;
 }
@@ -320,21 +348,25 @@ function hit(s, i, dmg, ev, crit) {
     dropItem(s, ITEM.BOSS_CHEST, e.x, e.y, ev);
     return;
   }
-  if (roll(s) % 100 < MONSTERS[e.kind].drop) dropItem(s, roll(s) % 2 === 0 ? ITEM.CHEST : ITEM.CHEESE, e.x, e.y, ev);
+  if (roll(s) % 100 < MONSTERS[e.kind].drop) dropItem(s, DROP_KINDS[roll(s) % 4], e.x, e.y, ev);
 }
 
 function dropItem(s, kind, x, y, ev) {
   if (s.items.length >= MAX_ITEMS || s.itemOcc[y * s.w + x]) return;
-  s.items.push({ kind, x, y, taken: false });
+  s.items.push({ kind, x, y, val: 0, taken: false });
   s.itemOcc[y * s.w + x] = s.items.length;
   ev.push({ t: "drop", x, y, kind });
 }
 
-function gear(s, slot, list, div, bonus, ev) {
-  const cap = list.length - 1;
-  const maxT = Math.min(cap, 1 + Math.floor(s.floor / div) + bonus);
+const GEAR = [{ slot: "weapon", list: WEAPONS, cap: 15, div: 8 }, { slot: "armor", list: ARMORS, cap: 11, div: 10 }, { slot: "sling", list: SLINGS, cap: 7, div: 14 }];
+/** A gear tier for this depth: the best four tiers reachable here, evenly. */
+function rollTier(cap, div, floor, bonus, r) {
+  const maxT = Math.min(cap, 1 + Math.floor(floor / div) + bonus);
   const minT = Math.max(1, maxT - 3);
-  const t = minT + (roll(s) % (maxT - minT + 1));
+  return minT + (r % (maxT - minT + 1));
+}
+
+function equip(s, slot, list, t, ev) {
   if (t > s[slot]) {
     s[slot] = t;
     ev.push({ t: "loot", slot, tier: t, name: list[t].name });
@@ -345,30 +377,35 @@ function gear(s, slot, list, div, bonus, ev) {
   }
 }
 
+function gear(s, slot, list, div, bonus, ev) {
+  equip(s, slot, list, rollTier(list.length - 1, div, s.floor, bonus, roll(s)), ev);
+}
+
+function applyBuff(s, b, ev) {
+  const f = s.floor;
+  switch (b) {
+    case 0: s.pebbles += 4 + Math.floor(f / 10); break;
+    case 1: { const v = 3 + Math.floor(f / 10); s.maxHp += v; s.hp += v; break; }
+    case 2: s.crit = Math.min(60, s.crit + 5); break;
+    case 3: s.luck += 1 + Math.floor(f / 25); break;
+    case 4: s.hp = s.maxHp; break;
+    case 5: s.atk += 1 + Math.floor(f / 40); break;
+    case 6: s.def += 1; break;
+    case 7: s.vision += 1; s.pebbles += 2; break;
+    case 8: s.regen += 2; break;
+    case 9: s.leech += 1; break;
+    case 10: s.goldPct += 20; break;
+    default: s.dodge = Math.min(40, s.dodge + 5); break;
+  }
+  ev.push({ t: "loot", slot: BUFFS[b], name: BUFF_NAMES[BUFFS[b]] });
+}
+
 function openChest(s, bonus, ev) {
   const c = roll(s) % 100;
   if (c < 20) gear(s, "weapon", WEAPONS, 8, bonus, ev);
   else if (c < 38) gear(s, "armor", ARMORS, 10, bonus, ev);
   else if (c < 48) gear(s, "sling", SLINGS, 14, bonus, ev);
-  else {
-    const b = roll(s) % 12;
-    const f = s.floor;
-    switch (b) {
-      case 0: s.pebbles += 4 + Math.floor(f / 10); break;
-      case 1: { const v = 3 + Math.floor(f / 10); s.maxHp += v; s.hp += v; break; }
-      case 2: s.crit = Math.min(60, s.crit + 5); break;
-      case 3: s.luck += 1 + Math.floor(f / 25); break;
-      case 4: s.hp = s.maxHp; break;
-      case 5: s.atk += 1 + Math.floor(f / 40); break;
-      case 6: s.def += 1; break;
-      case 7: s.vision += 1; s.pebbles += 2; break;
-      case 8: s.regen += 2; break;
-      case 9: s.leech += 1; break;
-      case 10: s.goldPct += 20; break;
-      default: s.dodge = Math.min(40, s.dodge + 5); break;
-    }
-    ev.push({ t: "loot", slot: BUFFS[b], name: BUFF_NAMES[BUFFS[b]] });
-  }
+  else applyBuff(s, roll(s) % 12, ev);
 }
 
 function pickup(s, x, y, ev) {
@@ -388,10 +425,38 @@ function pickup(s, x, y, ev) {
     const before = s.hp;
     s.hp = Math.min(s.maxHp, s.hp + 5 + Math.floor(s.maxHp / 5));
     ev.push({ t: "heal", x, y, value: s.hp - before });
-  } else {
+  } else if (it.kind === ITEM.CHEST || it.kind === ITEM.BOSS_CHEST) {
     ev.push({ t: "chest", x, y, boss: it.kind === ITEM.BOSS_CHEST });
     openChest(s, it.kind === ITEM.BOSS_CHEST ? 2 : 0, ev);
     if (it.kind === ITEM.BOSS_CHEST) openChest(s, 2, ev);
+  } else if (it.kind === ITEM.PEBBLES) {
+    const v = 3 + Math.floor(s.floor / 15);
+    s.pebbles += v;
+    ev.push({ t: "pebbles", x, y, value: v });
+  } else if (it.kind === ITEM.GEM) {
+    const v = Math.floor((5 * (3 + s.floor) * (100 + s.goldPct)) / 100) + s.luck;
+    s.gold += v;
+    ev.push({ t: "gem", x, y, value: v });
+  } else if (it.kind === ITEM.BERRY) {
+    s.maxHp += 1;
+    const before = s.hp;
+    s.hp = Math.min(s.maxHp, s.hp + 3 + Math.floor(s.maxHp / 10));
+    ev.push({ t: "berry", x, y, value: s.hp - before });
+  } else if (it.kind === ITEM.SHROOM) {
+    const c = roll(s) % 4;
+    if (c === 0) s.atk += 1;
+    else if (c === 1) s.def += 1;
+    else if (c === 2) s.crit = Math.min(60, s.crit + 5);
+    else s.hp = Math.max(1, s.hp - Math.max(1, Math.floor(s.maxHp / 10)));
+    ev.push({ t: "shroom", x, y, effect: c });
+  } else if (it.kind === ITEM.XPORB) {
+    ev.push({ t: "xporb", x, y, value: 10 + 3 * s.floor });
+    gainXp(s, 10 + 3 * s.floor, ev);
+  } else if (it.kind === ITEM.CHARM) {
+    applyBuff(s, it.val, ev);
+  } else {
+    const g = GEAR[it.kind - ITEM.WEAPON];
+    equip(s, g.slot, g.list, it.val, ev);
   }
 }
 
