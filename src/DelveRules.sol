@@ -14,7 +14,7 @@ contract DelveRules {
     uint256 public constant FLOORS = 200;
     uint256 public constant MAX_TAPE = 6000;
     uint256 internal constant MAX_ENEMIES = 40;
-    uint256 internal constant MAX_ITEMS = 48;
+    uint256 internal constant MAX_ITEMS = 64;
     uint256 internal constant CAVEIN_TURNS = 300;
     uint256 internal constant PLACE_TRIES = 100;
     uint256 internal constant CARVE_CAP = 12000;
@@ -34,6 +34,13 @@ contract DelveRules {
     uint256 internal constant CHEESE = 1;
     uint256 internal constant CHEST = 2;
     uint256 internal constant BOSS_CHEST = 3;
+    uint256 internal constant PEBBLES = 4;
+    uint256 internal constant GEM = 5;
+    uint256 internal constant BERRY = 6;
+    uint256 internal constant SHROOM = 7;
+    uint256 internal constant XPORB = 8;
+    uint256 internal constant WEAPON = 9;
+    uint256 internal constant CHARM = 12;
 
     uint256 internal constant FAST = 1;
     uint256 internal constant SLOW = 2;
@@ -97,6 +104,7 @@ contract DelveRules {
         uint256 kind;
         int256 x;
         int256 y;
+        uint256 val; // gear tier or charm index for ground gear
         bool taken;
     }
 
@@ -137,18 +145,112 @@ contract DelveRules {
 
     // ------------------------------------------------------------------ public
 
-    /// @notice The checkpoint a fresh run starts from.
+    /// @notice The checkpoint a fresh run starts from, for a Squeek of merge `level` (1..10).
     function init(uint8 level, uint32 seed) public pure returns (Progress memory p) {
         uint256 l = level < 1 ? 1 : level > 10 ? 10 : level;
         p.floor = 1;
-        p.maxHp = int256(10 + 2 * l);
+        p.maxHp = int256(10 + 3 * l);
         p.hp = p.maxHp;
-        p.atk = int256(1 + l / 3);
+        p.atk = int256(1 + l / 2);
+        p.def = int256((l - 1) / 3);
         p.pebbles = 5;
-        p.crit = 5;
+        p.crit = 5 + l;
         p.lvl = 1;
         p.rng = seed ^ 0x85EBCA6B;
         if (p.rng == 0) p.rng = 1;
+    }
+
+    /// @notice `init` plus the bonuses from the Squeek's traits (its DotGrid `traitWord`, or 0 for
+    ///         none). Mirrors web/genes.js. Returns the rarity tier (0 Common .. 4 Legendary) and
+    ///         the glyph hand (0 no match .. 6 five of a kind).
+    function start(uint8 level, uint32 seed, uint256 word)
+        external
+        pure
+        returns (Progress memory p, uint8 tier, uint8 hand)
+    {
+        p = init(level, seed);
+        if (word == 0) return (p, 0, 0);
+        int256[11] memory b;
+        (b, tier, hand) = genes(word);
+        p.maxHp += b[0];
+        p.atk += b[1];
+        p.def += b[2];
+        p.crit += uint256(b[3]);
+        if (p.crit > 60) p.crit = 60;
+        p.dodge += uint256(b[4]);
+        if (p.dodge > 40) p.dodge = 40;
+        p.luck += uint256(b[5]);
+        p.goldPct += uint256(b[6]);
+        p.leech += b[7];
+        p.regen += b[8];
+        p.vision += uint256(b[9]);
+        p.pebbles += uint256(b[10]);
+        p.hp = p.maxHp;
+    }
+
+    /// @notice Stat bonuses from a traitWord, indexed like genes.js STAT_KEYS: maxHp, atk, def,
+    ///         crit, dodge, luck, goldPct, leech, regen, vision, pebbles.
+    function genes(uint256 word) public pure returns (int256[11] memory b, uint8 tier, uint8 hand) {
+        uint256 pal = _byte(word, 2);
+        (uint256 el, bool spectral, bool known) = T.palette(pal);
+        if (known) {
+            (uint256 st, int256 amt) = T.element(el);
+            b[st] += spectral ? amt * 2 : amt;
+        }
+        { (uint256 st, int256 amt) = T.pattern(_byte(word, 3)); b[st] += amt; }
+        hand = _glyphs(b, word);
+        {
+            (uint256 st, int256 amt) = T.illumination(_byte(word, 9));
+            b[st] += amt;
+            (st, amt) = T.eyes(_byte(word, 10));
+            b[st] += amt;
+            (st, amt) = T.ears(_byte(word, 11));
+            b[st] += amt;
+            (st, amt) = T.background(_byte(word, 12));
+            b[st] += amt;
+        }
+        uint256 t = hand >= 4 ? 4 : hand;
+        if (pal == 17) ++t; // Spectral Gold
+        if (t > 4) t = 4;
+        tier = uint8(t);
+        b[0] += int256(3 * t);
+        b[1] += int256(t / 2);
+        b[3] += int256(2 * t);
+        b[6] += int256(5 * t);
+    }
+
+    function _byte(uint256 word, uint256 i) private pure returns (uint256) {
+        return (word >> (8 * i)) & 0xff;
+    }
+
+    /// @dev Matching glyphs across the five glyph slots multiply that glyph's bonus by k(k+1)/2.
+    function _glyphs(int256[11] memory b, uint256 word) private pure returns (uint8 hand) {
+        uint256[5] memory g;
+        for (uint256 i; i < 5; ++i) {
+            g[i] = _byte(word, 4 + i);
+        }
+        uint256 top;
+        uint256 second;
+        for (uint256 i; i < 5; ++i) {
+            bool seen;
+            for (uint256 j; j < i; ++j) {
+                if (g[j] == g[i]) seen = true;
+            }
+            if (seen) continue;
+            uint256 k;
+            for (uint256 j = i; j < 5; ++j) {
+                if (g[j] == g[i]) ++k;
+            }
+            (uint256 st, int256 amt) = T.glyph(g[i]);
+            b[st] += amt * int256((k * (k + 1)) / 2);
+            if (k > top) (top, second) = (k, top);
+            else if (k > second) second = k;
+        }
+        if (top == 5) return 6;
+        if (top == 4) return 5;
+        if (top == 3) return second == 2 ? 4 : 3;
+        if (top == 2) return second == 2 ? 2 : 1;
+        return 0;
     }
 
     /// @notice Replays `tape` from checkpoint `start` and returns the next checkpoint.
@@ -413,6 +515,42 @@ contract DelveRules {
         _addItems(f, SEED, 3 + cells / 90 + (_next(f) % 3), 1);
         _addItems(f, CHEESE, 1 + (floor / 20 < 3 ? floor / 20 : 3) + (floor >= 3 ? _next(f) % 2 : 0), 1);
         _addItems(f, CHEST, 1 + cells / 250 + (_next(f) % 2) + (mood == JOG ? 1 : 0), 2);
+        _groundLoot(f, floor, cells);
+    }
+
+    function _groundLoot(Floor memory f, uint256 floor, uint256 cells) private pure {
+        _addItems(f, PEBBLES, 1 + cells / 300, 1);
+        _addItems(f, GEM, (floor >= 2 && _next(f) % 3 == 0 ? 1 : 0) + cells / 600, 1);
+        _addItems(f, BERRY, _next(f) % 2, 1);
+        _addItems(f, SHROOM, floor >= 3 ? _next(f) % 2 : 0, 1);
+        _addItems(f, XPORB, 1 + (floor / 25 < 2 ? floor / 25 : 2), 1);
+        uint32 r = _next(f) % 100;
+        if (r < 30) {
+            uint256 slot = _next(f) % 3;
+            (uint256 cap, uint256 div) = _gearCap(slot);
+            uint256 val = _rollTier(cap, div, floor, 0, _next(f));
+            _addItemsVal(f, WEAPON + slot, 1, 2, val);
+        } else if (r < 45) {
+            _addItemsVal(f, CHARM, 1, 2, _next(f) % 12);
+        }
+    }
+
+    function _gearCap(uint256 slot) private pure returns (uint256 cap, uint256 div) {
+        if (slot == 0) return (15, 8);
+        if (slot == 1) return (11, 10);
+        return (7, 14);
+    }
+
+    /// @dev A gear tier for this depth: the best four tiers reachable here, evenly.
+    function _rollTier(uint256 cap, uint256 div, uint256 floor, uint256 bonus, uint32 r)
+        private
+        pure
+        returns (uint256)
+    {
+        uint256 maxT = 1 + floor / div + bonus;
+        if (maxT > cap) maxT = cap;
+        uint256 minT = maxT > 4 ? maxT - 3 : 1;
+        return minT + (r % (maxT - minT + 1));
     }
 
     function _spawnEnemies(Floor memory f, uint256 floor, uint8 mood, uint256 cells) private pure {
@@ -449,10 +587,14 @@ contract DelveRules {
     }
 
     function _addItems(Floor memory f, uint256 kind, uint256 n, int256 minDist) private pure {
+        _addItemsVal(f, kind, n, minDist, 0);
+    }
+
+    function _addItemsVal(Floor memory f, uint256 kind, uint256 n, int256 minDist, uint256 val) private pure {
         for (uint256 k; k < n; ++k) {
             (bool ok, int256 x, int256 y) = _place(f, minDist);
             if (!ok) continue;
-            f.items[f.nItems++] = Item(kind, x, y, false);
+            f.items[f.nItems++] = Item(kind, x, y, val, false);
             f.itemOcc[uint256(y * f.w + x)] = bytes1(uint8(f.nItems));
         }
     }
@@ -605,7 +747,10 @@ contract DelveRules {
             _drop(r, BOSS_CHEST, e.x, e.y);
             return;
         }
-        if (_roll(r) % 100 < drop) _drop(r, _roll(r) % 2 == 0 ? CHEST : CHEESE, e.x, e.y);
+        if (_roll(r) % 100 < drop) {
+            uint32 d = _roll(r) % 4;
+            _drop(r, d == 0 ? CHEST : d == 1 ? CHEESE : d == 2 ? GEM : PEBBLES, e.x, e.y);
+        }
     }
 
     function _gainXp(Progress memory p, uint256 v) private pure {
@@ -623,7 +768,7 @@ contract DelveRules {
         Floor memory f = r.f;
         uint256 idx = uint256(y * f.w + x);
         if (f.nItems >= MAX_ITEMS || f.itemOcc[idx] != 0) return;
-        f.items[f.nItems++] = Item(kind, x, y, false);
+        f.items[f.nItems++] = Item(kind, x, y, 0, false);
         f.itemOcc[idx] = bytes1(uint8(f.nItems));
     }
 
@@ -643,11 +788,55 @@ contract DelveRules {
             p.gold += (g * (100 + p.goldPct)) / 100 + p.luck;
         } else if (it.kind == CHEESE) {
             p.hp = _min(p.maxHp, p.hp + 5 + p.maxHp / 5);
-        } else {
+        } else if (it.kind == CHEST || it.kind == BOSS_CHEST) {
             uint256 bonus = it.kind == BOSS_CHEST ? 2 : 0;
             _openChest(r, bonus);
             if (it.kind == BOSS_CHEST) _openChest(r, bonus);
+        } else {
+            _pickupLoot(r, it);
         }
+    }
+
+    function _pickupLoot(Run memory r, Item memory it) private pure {
+        Progress memory p = r.p;
+        uint256 k = it.kind;
+        if (k == PEBBLES) {
+            p.pebbles += 3 + p.floor / 15;
+        } else if (k == GEM) {
+            p.gold += (5 * (3 + p.floor) * (100 + p.goldPct)) / 100 + p.luck;
+        } else if (k == BERRY) {
+            p.maxHp += 1;
+            p.hp = _min(p.maxHp, p.hp + 3 + p.maxHp / 10);
+        } else if (k == SHROOM) {
+            uint32 c = _roll(r) % 4;
+            if (c == 0) {
+                ++p.atk;
+            } else if (c == 1) {
+                ++p.def;
+            } else if (c == 2) {
+                p.crit = p.crit + 5 > 60 ? 60 : p.crit + 5;
+            } else {
+                int256 loss = p.maxHp / 10;
+                if (loss < 1) loss = 1;
+                p.hp = p.hp - loss < 1 ? int256(1) : p.hp - loss;
+            }
+        } else if (k == XPORB) {
+            _gainXp(p, 10 + 3 * p.floor);
+        } else if (k == CHARM) {
+            _applyBuff(r, uint32(it.val));
+        } else if (k == WEAPON) {
+            p.weapon = _equip(p, p.weapon, it.val);
+        } else if (k == WEAPON + 1) {
+            p.armor = _equip(p, p.armor, it.val);
+        } else {
+            p.sling = _equip(p, p.sling, it.val);
+        }
+    }
+
+    function _equip(Progress memory p, uint256 current, uint256 t) private pure returns (uint256) {
+        if (t > current) return t;
+        p.gold += 4 * t;
+        return current;
     }
 
     function _gear(Run memory r, uint256 current, uint256 cap, uint256 div, uint256 bonus)
@@ -655,13 +844,7 @@ contract DelveRules {
         pure
         returns (uint256)
     {
-        uint256 maxT = 1 + r.p.floor / div + bonus;
-        if (maxT > cap) maxT = cap;
-        uint256 minT = maxT > 4 ? maxT - 3 : 1;
-        uint256 t = minT + (_roll(r) % (maxT - minT + 1));
-        if (t > current) return t;
-        r.p.gold += 4 * t;
-        return current;
+        return _equip(r.p, current, _rollTier(cap, div, r.p.floor, bonus, _roll(r)));
     }
 
     function _openChest(Run memory r, uint256 bonus) private pure {
@@ -674,36 +857,40 @@ contract DelveRules {
         } else if (c < 48) {
             p.sling = _gear(r, p.sling, 7, 14, bonus);
         } else {
-            uint32 b = _roll(r) % 12;
-            uint256 fl = p.floor;
-            if (b == 0) {
-                p.pebbles += 4 + fl / 10;
-            } else if (b == 1) {
-                int256 v = int256(3 + fl / 10);
-                p.maxHp += v;
-                p.hp += v;
-            } else if (b == 2) {
-                p.crit = p.crit + 5 > 60 ? 60 : p.crit + 5;
-            } else if (b == 3) {
-                p.luck += 1 + fl / 25;
-            } else if (b == 4) {
-                p.hp = p.maxHp;
-            } else if (b == 5) {
-                p.atk += int256(1 + fl / 40);
-            } else if (b == 6) {
-                ++p.def;
-            } else if (b == 7) {
-                ++p.vision;
-                p.pebbles += 2;
-            } else if (b == 8) {
-                p.regen += 2;
-            } else if (b == 9) {
-                ++p.leech;
-            } else if (b == 10) {
-                p.goldPct += 20;
-            } else {
-                p.dodge = p.dodge + 5 > 40 ? 40 : p.dodge + 5;
-            }
+            _applyBuff(r, _roll(r) % 12);
+        }
+    }
+
+    function _applyBuff(Run memory r, uint32 b) private pure {
+        Progress memory p = r.p;
+        uint256 fl = p.floor;
+        if (b == 0) {
+            p.pebbles += 4 + fl / 10;
+        } else if (b == 1) {
+            int256 v = int256(3 + fl / 10);
+            p.maxHp += v;
+            p.hp += v;
+        } else if (b == 2) {
+            p.crit = p.crit + 5 > 60 ? 60 : p.crit + 5;
+        } else if (b == 3) {
+            p.luck += 1 + fl / 25;
+        } else if (b == 4) {
+            p.hp = p.maxHp;
+        } else if (b == 5) {
+            p.atk += int256(1 + fl / 40);
+        } else if (b == 6) {
+            ++p.def;
+        } else if (b == 7) {
+            ++p.vision;
+            p.pebbles += 2;
+        } else if (b == 8) {
+            p.regen += 2;
+        } else if (b == 9) {
+            ++p.leech;
+        } else if (b == 10) {
+            p.goldPct += 20;
+        } else {
+            p.dodge = p.dodge + 5 > 40 ? 40 : p.dodge + 5;
         }
     }
 
