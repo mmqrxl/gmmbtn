@@ -1,10 +1,10 @@
-// Chain access: Sepolia reads, simulated writes, and replay logs.
+// Chain access: Sepolia reads, simulated and gas-checked writes, and replay logs.
 import {
   createPublicClient, createWalletClient, custom, http, getAddress, isAddress, parseAbiItem, parseEventLogs,
 } from "https://esm.sh/viem@2.21.0";
 import { sepolia } from "https://esm.sh/viem@2.21.0/chains";
-import { GAME_ABI, RULES_ABI } from "./abi.js";
-import { GAME_ADDRESS, DEPLOY_BLOCK, RPC_URL, API_BASE } from "./config.js";
+import { GAME_ABI } from "./abi.js";
+import { GAME_ADDRESS, RPC_URL, API_BASE } from "./config.js";
 
 const params = new URLSearchParams(location.search);
 const qsGame = params.get("game");
@@ -16,19 +16,14 @@ export const pub = createPublicClient({ chain: sepolia, transport: http(params.g
 const NFT_ABI = [
   { type: "function", name: "tokenURI", stateMutability: "view", inputs: [{ type: "uint256" }], outputs: [{ type: "string" }] },
 ];
-const SUBMIT_EVENT = parseAbiItem(
-  "event RunSubmitted(uint256 indexed runId, uint256 indexed expeditionId, uint256 indexed tokenId, address player, uint32 score, uint8 floor, uint16 kills, bool won, bool dead, bytes tape)",
+const ADVANCED = parseAbiItem(
+  "event Advanced(uint256 indexed runId, uint256 indexed tokenId, address indexed player, uint16 fromFloor, uint16 toFloor, uint32 score, bool dead, bool fled, bool won, bytes tape)",
 );
+/** Stay well under what Sepolia blocks accept for one checkpoint transaction. */
+export const GAS_BUDGET = 25_000_000n;
 
 export const read = (functionName, args = []) =>
   pub.readContract({ address: gameAddress, abi: GAME_ABI, functionName, args });
-
-let rulesAddress = null;
-/** Calls the DelveRules contract the game verifies runs with. */
-export async function rules(functionName, args = []) {
-  rulesAddress ??= await read("rules");
-  return pub.readContract({ address: rulesAddress, abi: RULES_ABI, functionName, args });
-}
 
 let wallet = null;
 export let account = null;
@@ -46,17 +41,23 @@ export async function connectWallet() {
   return account;
 }
 
-/** Simulate from the signer first, then ask the wallet to sign. Returns the receipt and decoded logs. */
-export async function write(functionName, args, onStatus) {
+/** Gas a call would use from the connected account, or null if it would revert. */
+export async function estimate(functionName, args) {
+  try {
+    return await pub.estimateContractGas({ address: gameAddress, abi: GAME_ABI, functionName, args, account });
+  } catch { return null; }
+}
+
+/** Simulate from the signer first, then ask the wallet to sign. Returns the receipt's decoded events. */
+export async function write(functionName, args, onStatus, gas) {
   onStatus?.("Simulating…");
-  const { request } = await pub.simulateContract({ address: gameAddress, abi: GAME_ABI, functionName, args, account });
+  const { request } = await pub.simulateContract({ address: gameAddress, abi: GAME_ABI, functionName, args, account, ...(gas ? { gas } : {}) });
   onStatus?.("Confirm in your wallet…");
   const hash = await wallet.writeContract(request);
   onStatus?.("Waiting for confirmation…", hash);
   const receipt = await pub.waitForTransactionReceipt({ hash });
   if (receipt.status !== "success") throw new Error(`Transaction reverted (${hash})`);
-  const events = parseEventLogs({ abi: GAME_ABI, logs: receipt.logs });
-  return { hash, receipt, events };
+  return { hash, receipt, events: parseEventLogs({ abi: GAME_ABI, logs: receipt.logs }) };
 }
 
 /** Squeek IDs the API suggests for an address; eligibility is always re-checked onchain. */
@@ -75,7 +76,7 @@ export async function suggestedSqueeks(addr) {
   return ids;
 }
 
-/** The Squeek's onchain metadata: name and SVG image (as text, treated strictly as data). */
+/** The Squeek's onchain metadata: SVG image (as text, treated strictly as data). */
 export async function squeekArt(nftAddress, tokenId) {
   try {
     const uri = await pub.readContract({ address: nftAddress, abi: NFT_ABI, functionName: "tokenURI", args: [tokenId] });
@@ -86,16 +87,17 @@ export async function squeekArt(nftAddress, tokenId) {
   } catch { return null; }
 }
 
-/** The submitted tape of a run, from its RunSubmitted log. */
-export async function runTape(runId) {
-  // Expeditions plus their grace last 2.5 hours (~750 Sepolia blocks); search a recent window.
+/** Every checkpointed tape of a run, in order, from its Advanced logs. */
+export async function runTape(runId, startBlock) {
   const latest = await pub.getBlockNumber();
-  const recent = latest > 5000n ? latest - 5000n : 0n;
-  const deploy = BigInt(DEPLOY_BLOCK || 0);
-  const logs = await pub.getLogs({
-    address: gameAddress, event: SUBMIT_EVENT, args: { runId }, fromBlock: deploy > recent ? deploy : recent, toBlock: latest,
-  });
-  return logs.length ? logs[logs.length - 1].args.tape : null;
+  const STEP = 9000n;
+  const tapes = [];
+  for (let from = BigInt(startBlock); from <= latest; from += STEP) {
+    const to = from + STEP - 1n > latest ? latest : from + STEP - 1n;
+    const logs = await pub.getLogs({ address: gameAddress, event: ADVANCED, args: { runId }, fromBlock: from, toBlock: to });
+    for (const l of logs) tapes.push(l.args.tape);
+  }
+  return tapes;
 }
 
 export async function liveWheel() {

@@ -6,20 +6,19 @@ import {SqueekDelve} from "../src/SqueekDelve.sol";
 import {DelveRules} from "../src/DelveRules.sol";
 import {ISqueekCore, ISqueekNFT, ISqueekStaking} from "../src/interfaces/ISqueekchain.sol";
 import {MockCore, MockNFT, MockStaking} from "./mocks/Mocks.sol";
+import {MockRules} from "./mocks/MockRules.sol";
+import {ProgressJson} from "./ProgressJson.sol";
 
 contract SqueekDelveTest is Test {
     MockCore core;
     MockNFT nft;
     MockStaking staking;
-    DelveRules rules;
-    SqueekDelve game;
+    SqueekDelve game; // with MockRules: each tape byte = one floor + that many seeds
+    SqueekDelve real; // with the real rules
 
-    address alice = makeAddr("alice");
+    address alice = address(0xA11CE);
     address bob = makeAddr("bob");
     address carol = makeAddr("carol");
-
-    // A short scripted walk; whatever it does, the contract's score must equal rules.simulate.
-    bytes constant TAPE = hex"0101010102020202030303030000000007070707040404";
 
     function setUp() public {
         vm.warp(1_000_000);
@@ -27,9 +26,11 @@ contract SqueekDelveTest is Test {
         core = new MockCore(1);
         nft = new MockNFT();
         staking = new MockStaking();
-        rules = new DelveRules();
         game = new SqueekDelve(
-            ISqueekCore(address(core)), ISqueekNFT(address(nft)), ISqueekStaking(address(staking)), rules
+            ISqueekCore(address(core)), ISqueekNFT(address(nft)), ISqueekStaking(address(staking)), new MockRules()
+        );
+        real = new SqueekDelve(
+            ISqueekCore(address(core)), ISqueekNFT(address(nft)), ISqueekStaking(address(staking)), new DelveRules()
         );
         nft.mint(alice, 1, 1);
         nft.mint(alice, 2, 9);
@@ -42,156 +43,164 @@ contract SqueekDelveTest is Test {
         while (core.settled() < through) core.settle(core.settled() + 1, work);
     }
 
-    function _start(address who, uint256 tokenId) internal returns (uint256 runId, uint32 seed) {
+    function _start(SqueekDelve g, address who, uint256 tokenId) internal returns (uint256 runId, uint32 seed) {
         vm.roll(block.number + 1);
         vm.prevrandao(bytes32(uint256(keccak256(abi.encode(block.number, tokenId)))));
         vm.prank(who);
-        return game.startRun(tokenId);
+        return g.startRun(tokenId);
     }
 
-    function test_openSetsMoodFromRecentWork() public {
+    function test_startReadsTheHamstersMood() public {
         _settle(10, 0);
         _settle(16, 60); // last 6 rounds: 360 work => Zoomies
-        game.openExpedition();
-        SqueekDelve.Expedition memory ex = game.expedition(0);
-        assertEq(ex.seedRound, 16);
-        assertEq(ex.work, 360);
-        assertEq(ex.mood, 3);
-        assertEq(ex.endsAt, block.timestamp + 2 hours);
-
-        vm.expectRevert(abi.encodeWithSelector(SqueekDelve.ExpeditionRunning.selector, ex.endsAt));
-        game.openExpedition();
-
-        vm.warp(ex.endsAt);
+        (uint256 runId,) = _start(game, alice, 2);
+        SqueekDelve.Run memory r = game.run(runId);
+        assertEq(r.mood, 3);
+        assertEq(r.work, 360);
+        assertEq(r.level, 9);
+        assertEq(r.progress.floor, 1);
+        assertEq(r.progress.maxHp, 28); // 10 + 2 * level 9
         _settle(30, 0); // hamster slept
-        game.openExpedition();
-        assertEq(game.expedition(1).mood, 0);
-        assertFalse(game.expedition(0).crowned); // still in its submission grace
+        (uint256 run2,) = _start(game, alice, 2);
+        assertEq(game.run(run2).mood, 0);
     }
 
     function test_everyRunGetsItsOwnSeed() public {
-        game.openExpedition();
-        (uint256 r0, uint32 s0) = _start(alice, 1);
-        (uint256 r1, uint32 s1) = _start(alice, 1);
-        (uint256 r2, uint32 s2) = _start(alice, 2);
-        assertEq(r0, 0);
-        assertEq(r2, 2);
+        (, uint32 s0) = _start(game, alice, 1);
+        (, uint32 s1) = _start(game, alice, 1);
+        (, uint32 s2) = _start(game, alice, 2);
         assertTrue(s0 != s1 && s1 != s2 && s0 != s2);
-        assertEq(game.run(r1).seed, s1);
-        assertEq(game.run(r2).level, 9);
-    }
-
-    function test_submitVerifiesByReplay() public {
-        _settle(8, 20);
-        game.openExpedition();
-        (uint256 runId, uint32 seed) = _start(alice, 2);
-        DelveRules.Result memory expected = rules.simulate(seed, 9, game.expedition(0).mood, TAPE);
-
-        vm.prank(alice);
-        DelveRules.Result memory got = game.submitRun(runId, TAPE);
-        assertEq(got.score, expected.score);
-        SqueekDelve.Best memory b = game.bestOf(0, 2);
-        assertEq(b.score, expected.score);
-        assertEq(b.runId, runId);
-        assertEq(b.level, 9);
-        assertEq(game.run(runId).score, expected.score);
-        assertEq(game.record(2).runs, 1);
-
-        vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(SqueekDelve.AlreadySubmitted.selector, runId));
-        game.submitRun(runId, TAPE);
     }
 
     function test_holderOnlyAndOwnRuns() public {
-        game.openExpedition();
         vm.prank(bob);
         vm.expectRevert(abi.encodeWithSelector(SqueekDelve.NotSqueekHolder.selector, 1));
         game.startRun(1);
-
-        (uint256 runId,) = _start(carol, 4); // staked Squeeks play
+        (uint256 runId,) = _start(game, carol, 4); // staked Squeeks play
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(SqueekDelve.NotYourRun.selector, runId));
-        game.submitRun(runId, TAPE);
+        game.advance(runId, hex"01");
         vm.prank(carol);
-        game.submitRun(runId, TAPE);
+        game.advance(runId, hex"01");
     }
 
-    function test_threeRunsPerSqueek_bestCounts() public {
-        game.openExpedition();
-        uint256[3] memory ids;
-        uint256 hi;
+    function test_threeRunsPerSeason() public {
         for (uint256 i; i < 3; ++i) {
-            (ids[i],) = _start(alice, 1);
+            _start(game, alice, 1);
         }
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(SqueekDelve.OutOfRuns.selector, 1));
         game.startRun(1);
+        vm.warp(block.timestamp + 1 days); // next season
+        _start(game, alice, 1);
+        assertEq(game.runsStarted(1, 1), 1);
+    }
 
+    function test_checkpointsAccumulate() public {
+        (uint256 runId,) = _start(game, alice, 1);
         vm.startPrank(alice);
-        for (uint256 i; i < 3; ++i) {
-            uint256 sc = game.submitRun(ids[i], i == 1 ? bytes(hex"05") : TAPE).score;
-            if (sc > hi) hi = sc;
-        }
+        game.advance(runId, hex"0a0a0a"); // floors 1->4, 30 seeds
+        DelveRules.Progress memory p = game.advance(runId, hex"14"); // floor 5, +20 seeds
         vm.stopPrank();
-        assertEq(game.bestOf(0, 1).score, hi);
-        assertEq(game.record(1).totalScore, hi);
-        assertEq(game.runsStarted(0, 1), 3);
+        assertEq(p.floor, 5);
+        assertEq(p.gold, 50);
+        SqueekDelve.Run memory r = game.run(runId);
+        assertEq(r.score, 50 + 50 * 4); // seeds + 50 per floor descended
+        assertEq(game.progressOf(runId).floor, 5);
+        assertEq(game.record(1).deepest, 5);
+        assertEq(game.bestOf(0, 1).score, r.score);
     }
 
-    function test_windows() public {
-        vm.prank(alice);
-        vm.expectRevert(SqueekDelve.NoOpenExpedition.selector);
-        game.startRun(1);
-
-        game.openExpedition();
-        SqueekDelve.Expedition memory ex = game.expedition(0);
-        (uint256 runId,) = _start(alice, 1);
-        vm.warp(ex.endsAt);
-        vm.prank(alice);
-        vm.expectRevert(SqueekDelve.NoOpenExpedition.selector);
-        game.startRun(1);
-
-        vm.prank(alice);
+    function test_overAndExpired() public {
+        (uint256 runId,) = _start(game, alice, 1);
+        vm.startPrank(alice);
         vm.expectRevert(SqueekDelve.EmptyTape.selector);
-        game.submitRun(runId, "");
+        game.advance(runId, "");
+        game.advance(runId, hex"05ff"); // one floor, then dies
+        vm.expectRevert(abi.encodeWithSelector(SqueekDelve.RunOver.selector, runId));
+        game.advance(runId, hex"01");
+        vm.stopPrank();
 
-        vm.warp(ex.endsAt + 30 minutes);
+        (uint256 run2,) = _start(game, alice, 1);
+        vm.warp(block.timestamp + 2 days);
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(SqueekDelve.SubmissionClosed.selector, runId));
-        game.submitRun(runId, TAPE);
+        vm.expectRevert(abi.encodeWithSelector(SqueekDelve.RunExpired.selector, run2));
+        game.advance(run2, hex"01");
     }
 
-    function test_longTapeReverts() public {
-        game.openExpedition();
-        (uint256 runId,) = _start(alice, 1);
+    function test_victoryAndRecords() public {
+        (uint256 runId,) = _start(game, alice, 2);
+        bytes memory tape = new bytes(200);
+        for (uint256 i; i < 200; ++i) {
+            tape[i] = bytes1(uint8(1));
+        }
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(DelveRules.TapeTooLong.selector, 1001));
-        game.submitRun(runId, new bytes(1001));
+        DelveRules.Progress memory p = game.advance(runId, tape);
+        assertTrue(p.won);
+        SqueekDelve.Record memory rec = game.record(2);
+        assertEq(rec.victories, 1);
+        assertEq(rec.deepest, 200);
+        assertEq(rec.bossKills, 20);
     }
 
-    function test_boardAndCrown() public {
-        game.openExpedition();
-        SqueekDelve.Expedition memory ex = game.expedition(0);
+    function test_boardsSortCapAndKeepBestPerSqueek() public {
         for (uint256 i; i < 12; ++i) {
             address p = address(uint160(0x1000 + i));
-            nft.mint(p, 100 + i, uint8(1 + (i % 10)));
-            (uint256 runId,) = _start(p, 100 + i);
+            nft.mint(p, 100 + i, 1);
+            (uint256 runId,) = _start(game, p, 100 + i);
             vm.prank(p);
-            game.submitRun(runId, TAPE);
+            game.advance(runId, abi.encodePacked(uint8(10 + i)));
         }
         (uint256[] memory ids, SqueekDelve.Best[] memory bests) = game.leaderboard(0);
         assertEq(ids.length, 10);
+        assertEq(ids[0], 111);
         for (uint256 i = 1; i < 10; ++i) {
             assertGe(bests[i - 1].score, bests[i].score);
         }
+        (uint256[] memory all,) = game.allTimeBoard();
+        assertEq(all[0], 111);
 
-        vm.warp(ex.endsAt);
-        vm.expectRevert(abi.encodeWithSelector(SqueekDelve.NotEnded.selector, 0));
+        // A worse second run doesn't replace a Squeek's best.
+        (uint256 again,) = _start(game, address(0x1000 + 11), 111);
+        vm.prank(address(0x1000 + 11));
+        game.advance(again, hex"fe");
+        assertEq(game.bestOf(0, 111).score, bests[0].score);
+    }
+
+    function test_crownAfterSeasonSettles() public {
+        (uint256 runId,) = _start(game, alice, 1);
+        vm.prank(alice);
+        game.advance(runId, hex"30");
+        vm.expectRevert(abi.encodeWithSelector(SqueekDelve.SeasonNotSettled.selector, 0));
         game.crown(0);
-        vm.warp(ex.endsAt + 30 minutes);
+        vm.warp(game.seasonEndsAt(0) + 2 days);
         game.crown(0);
-        assertEq(game.record(ids[0]).crowns, 1);
+        assertEq(game.record(1).crowns, 1);
         vm.expectRevert(abi.encodeWithSelector(SqueekDelve.AlreadyCrowned.selector, 0));
         game.crown(0);
+    }
+
+    /// Real rules, real tapes: the run recorded by tools/parity.mjs for this exact seed is
+    /// checkpointed through SqueekDelve in the same chunks the game client would send.
+    function test_integrationWithRealRules() public {
+        string memory json = vm.readFile("test/fixtures/parity.json");
+        _settle(6, 5); // 30 work in the window: a Potter burrow, as recorded
+        vm.roll(500);
+        vm.prevrandao(bytes32(uint256(0xbeef)));
+        vm.setBlockhash(499, bytes32(uint256(0xcafe)));
+        vm.prank(alice);
+        (uint256 runId, uint32 seed) = real.startRun(2);
+        assertEq(seed, vm.parseJsonUint(json, ".integration.seed"), "seed derivation");
+
+        bytes[] memory chunks = vm.parseJsonBytesArray(json, ".integration.chunks");
+        DelveRules.Progress memory p;
+        for (uint256 c; c < chunks.length; ++c) {
+            vm.prank(alice);
+            p = real.advance(runId, chunks[c]);
+        }
+        DelveRules.Progress memory want = ProgressJson.read(json, ".integration.final");
+        assertEq(abi.encode(p), abi.encode(want), "final progress");
+        assertEq(real.run(runId).score, vm.parseJsonUint(json, ".integration.score"));
+        assertEq(abi.encode(real.progressOf(runId)), abi.encode(want), "stored progress");
     }
 }

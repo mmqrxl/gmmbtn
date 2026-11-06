@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Squeek Delve — a holder-only roguelike, verified onchain</title>
-  <meta name="description" content="A pixel roguelike for Squeek NFT holders. Every burrow is seeded by the real hamster's certified work on Sepolia, and every run is replayed and verified by the contract." />
+  <title>Squeek Delve — 200 floors, verified onchain</title>
+  <meta name="description" content="A holder-only pixel roguelike for Squeek NFT holders: 200 floors, 23 monsters, 6 bosses and 40+ items. Every floor you save is replayed and verified by a Sepolia contract, and the real hamster sets each run's mood." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" />
@@ -23,7 +23,7 @@
   <main class="layout">
     <section class="stage">
       <div class="screen-wrap">
-        <canvas id="screen" width="720" height="576" tabindex="0" aria-label="Squeek Delve game screen"></canvas>
+        <canvas id="screen" tabindex="0" aria-label="Squeek Delve game screen"></canvas>
         <div id="overlay" class="overlay hidden"></div>
       </div>
       <div class="controls">
@@ -39,9 +39,10 @@
           <div class="row left">
             <button id="practiceBtn" class="px-btn">PRACTICE RUN</button>
             <button id="rankedBtn" class="px-btn gold">RANKED RUN</button>
+            <button id="saveNow" class="px-btn" disabled>NOTHING TO SAVE</button>
             <button class="px-btn tiny" data-act="5">FLEE</button>
           </div>
-          <p><b>WASD / ARROWS</b> move &amp; melee · <b>SHIFT+DIR</b> or <b>IJKL</b> or <b>F</b> then a direction: sling a pebble · <b>SPACE</b> wait · <b>Q</b> flee with your seeds</p>
+          <p><b>WASD / ARROWS</b> move &amp; melee · <b>SHIFT+DIR</b>, <b>IJKL</b> or <b>F</b>+dir: sling · <b>SPACE</b> wait · <b>C</b> save floors onchain · <b>Q</b> leave the burrow</p>
         </div>
       </div>
     </section>
@@ -53,22 +54,29 @@
         <div id="panelStatus" class="small"></div>
       </div>
       <div class="panel">
-        <h3 id="expTitle">EXPEDITION</h3>
-        <div id="expBody"></div>
+        <h3 id="seasonTitle">SEASON</h3>
+        <div id="seasonBody"></div>
       </div>
       <div class="panel">
-        <h3>DEEPEST DELVERS</h3>
+        <h3>TODAY'S DEEPEST</h3>
         <div id="board" class="board"></div>
+      </div>
+      <div class="panel">
+        <h3>HALL OF DEPTH · ALL TIME</h3>
+        <div id="allTime" class="board"></div>
+      </div>
+      <div class="panel">
+        <h3>BESTIARY &amp; LOOT</h3>
+        <div id="codex"></div>
       </div>
       <div class="panel">
         <h3>HOW IT WORKS</h3>
         <ul class="small rules">
-          <li><b>Six floors</b> across three biomes. Every run is a brand-new burrow: caverns, dug-out rooms or warrens, a random start and random loot.</li>
-          <li><b>Fight two ways.</b> Bump to melee. Sling pebbles from range (Shift+direction / IJKL / 🎯). Crits hit double.</li>
-          <li><b>Open chests</b> for gear: Thorn Dagger, Pencil Spear (pierces), Acorn Hammer, Golden Fork; Walnut Helm, Thimble Mail, Chestnut Plate; Rubber Sling, Pea Shooter; plus vitamins, clovers, lucky whiskers and pebble pouches. Worse gear is salvaged for seeds.</li>
-          <li><b>Enemies:</b> beetles, snakes, fast rats (2 steps a turn), tanky slow moles, and the Tabby boss guarding the golden wheel. Each stairway down lets you rest for 25% HP.</li>
-          <li><b>The real hamster</b> sets each 2-hour expedition's mood from his certified work in the 6 rounds before it opened: 💤 dark &amp; drowsy, 🐾 normal, 🏃 richer, ⚡ deadlier but double seeds.</li>
-          <li><b>Ranked runs:</b> your Squeek draws a fresh burrow onchain (3 per expedition), you play, and the contract replays every move to score it. Your Squeek's level sets HP/ATK; its art colors your hero.</li>
+          <li><b>200 floors, 8 biomes.</b> Maps grow from 17×13 to 47×35. Every 10th floor is a boss floor whose stairs stay sealed until the boss falls; floor 200 hides the Cat Emperor and the golden wheel.</li>
+          <li><b>Deeper is deadlier and richer.</b> Monsters get tougher and new kinds appear; chests roll better weapons, armor, slings and charms. Kill to gain XP and level up.</li>
+          <li><b>Fight two ways.</b> Bump to melee, sling pebbles at range. Weapons can pierce, cleave, leech or crit. Linger too long on a floor and the burrow caves in.</li>
+          <li><b>The real hamster</b> sets each run's mood from his certified work in SqueekCore's last 6 rounds: 💤 dark &amp; drowsy, 🐾 normal, 🏃 richer, ⚡ deadlier but double seeds.</li>
+          <li><b>Ranked runs</b> draw their burrow onchain (3 per Squeek per day). Save your floors any time with <b>C</b>: the contract replays every move of them and records your depth and score. Runs stay open for 2 days.</li>
         </ul>
       </div>
     </aside>

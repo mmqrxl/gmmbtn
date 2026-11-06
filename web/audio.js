@@ -59,6 +59,10 @@ const SFX = {
   shoot: () => { tone(900, 0.05, { type: "triangle", slide: -500, vol: 0.05 }); noise(0.04, 0.03); },
   chest: () => { tone(240, 0.06, { type: "square", vol: 0.04 }); tone(360, 0.08, { type: "triangle", delay: 0.05 }); },
   loot: () => [659, 784, 988, 1319].forEach((f, i) => tone(f, 0.09, { type: "square", vol: 0.045, delay: i * 0.07 })),
+  explode: () => { noise(0.35, 0.12); tone(110, 0.35, { type: "sawtooth", slide: -70, vol: 0.08 }); },
+  levelup: () => [523, 659, 784, 1046, 1318].forEach((f, i) => tone(f, 0.1, { type: "square", vol: 0.04, delay: i * 0.06 })),
+  boss: () => [196, 185, 175, 165].forEach((f, i) => tone(f, 0.3, { type: "sawtooth", vol: 0.06, delay: i * 0.22 })),
+  save: () => [784, 988, 1175].forEach((f, i) => tone(f, 0.12, { type: "triangle", vol: 0.05, delay: i * 0.08 })),
   ui: () => tone(660, 0.04, { type: "triangle", vol: 0.04 }),
 };
 

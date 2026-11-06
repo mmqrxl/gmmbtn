@@ -14,7 +14,6 @@ contract SqueekDelveForkTest is Test {
     address constant STAKING = 0x50fd1780526C3186A0c037c7622203bC4fb611ca;
 
     SqueekDelve game;
-    DelveRules rules;
     bool live;
 
     function setUp() public {
@@ -22,29 +21,28 @@ contract SqueekDelveForkTest is Test {
         if (bytes(rpc).length == 0) return;
         vm.createSelectFork(rpc);
         live = true;
-        rules = new DelveRules();
-        game = new SqueekDelve(ISqueekCore(CORE), ISqueekNFT(NFT), ISqueekStaking(STAKING), rules);
+        game = new SqueekDelve(ISqueekCore(CORE), ISqueekNFT(NFT), ISqueekStaking(STAKING), new DelveRules());
     }
 
-    function test_fork_openStartSubmitWithRealSqueek() public {
+    function test_fork_startAndCheckpointWithRealSqueek() public {
         if (!live) return;
-        game.openExpedition();
-        SqueekDelve.Expedition memory ex = game.expedition(0);
+        (uint8 mood, uint64 work, uint64 settled) = game.hamsterMood();
         ISqueekCore.CoreState memory st = ISqueekCore(CORE).state();
-        assertEq(ex.seedRound, st.settledThroughRound);
-        uint64 from = st.settledThroughRound - 6;
-        assertEq(ex.work, st.cumulativeWork - ISqueekCore(CORE).roundPage(from, from, 0).end.cumulativeWork);
+        assertEq(settled, st.settledThroughRound);
+        uint64 from = settled - 6;
+        assertEq(work, st.cumulativeWork - ISqueekCore(CORE).roundPage(from, from, 0).end.cumulativeWork);
 
         address holder = ISqueekNFT(NFT).ownerOf(1);
-        uint8 lvl = ISqueekNFT(NFT).level(1);
         vm.prank(holder);
-        (uint256 runId, uint32 seed) = game.startRun(1);
-        bytes memory tape = hex"01010101020202020303030300000000";
-        DelveRules.Result memory expected = rules.simulate(seed, lvl, ex.mood, tape);
+        (uint256 runId,) = game.startRun(1);
+        SqueekDelve.Run memory r = game.run(runId);
+        assertEq(r.mood, mood);
+        assertEq(r.level, ISqueekNFT(NFT).level(1));
+
         vm.prank(holder);
-        DelveRules.Result memory got = game.submitRun(runId, tape);
-        assertEq(got.score, expected.score);
-        assertEq(game.bestOf(0, 1).level, lvl);
+        DelveRules.Progress memory p = game.advance(runId, hex"040405"); // wait twice, then flee
+        assertTrue(p.fled);
+        assertEq(game.record(1).runs, 1);
 
         vm.prank(address(0xBEEF));
         vm.expectRevert(abi.encodeWithSelector(SqueekDelve.NotSqueekHolder.selector, 2));

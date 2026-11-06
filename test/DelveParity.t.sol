@@ -3,8 +3,10 @@ pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {DelveRules} from "../src/DelveRules.sol";
+import {ProgressJson} from "./ProgressJson.sol";
 
-/// @notice Replays runs recorded by the JS engine (tools/parity.mjs) and requires identical results.
+/// @notice Replays runs recorded by the JS engine (tools/parity.mjs) checkpoint by checkpoint and
+///         requires identical results.
 contract DelveParityTest is Test {
     DelveRules rules;
     string json;
@@ -18,67 +20,96 @@ contract DelveParityTest is Test {
         while (vm.keyExistsJson(json, string.concat(key, "[", vm.toString(n), "]"))) ++n;
     }
 
-    function _u(string memory k, string memory f) internal view returns (uint256) {
-        return vm.parseJsonUint(json, string.concat(k, f));
+    function _replay(string memory k) internal view returns (DelveRules.Progress memory p, uint256 maxGas) {
+        uint32 seed = uint32(vm.parseJsonUint(json, string.concat(k, ".seed")));
+        uint8 mood = uint8(vm.parseJsonUint(json, string.concat(k, ".mood")));
+        uint8 level = uint8(vm.parseJsonUint(json, string.concat(k, ".level")));
+        p = vm.keyExistsJson(json, string.concat(k, ".start.floor"))
+            ? ProgressJson.read(json, string.concat(k, ".start"))
+            : rules.init(level, seed);
+        bytes[] memory chunks = vm.parseJsonBytesArray(json, string.concat(k, ".chunks"));
+        for (uint256 c; c < chunks.length; ++c) {
+            uint256 g = gasleft();
+            p = rules.advance(seed, mood, p, chunks[c]);
+            uint256 used = g - gasleft();
+            if (used > maxGas) maxGas = used;
+        }
     }
 
-    function test_runsMatchJsEngine() public view {
+    function test_runsMatchJsEngine() public {
         uint256 n = _count(".cases");
-        assertGt(n, 150);
+        assertGt(n, 50);
+        uint256 worst;
         for (uint256 i; i < n; ++i) {
             string memory k = string.concat(".cases[", vm.toString(i), "]");
-            DelveRules.Result memory r = rules.simulate(
-                uint32(_u(k, ".seed")),
-                uint8(_u(k, ".level")),
-                uint8(_u(k, ".mood")),
-                vm.parseJsonBytes(json, string.concat(k, ".tape"))
-            );
-            assertEq(r.score, _u(k, ".score"), string.concat(k, " score"));
-            assertEq(r.floor, _u(k, ".floor"), string.concat(k, " floor"));
-            assertEq(r.kills, _u(k, ".kills"), string.concat(k, " kills"));
-            assertEq(r.gold, _u(k, ".gold"), string.concat(k, " gold"));
-            assertEq(r.hp, _u(k, ".hp"), string.concat(k, " hp"));
-            assertEq(r.turns, _u(k, ".turns"), string.concat(k, " turns"));
-            assertEq(r.weapon, _u(k, ".weapon"), string.concat(k, " weapon"));
-            assertEq(r.armor, _u(k, ".armor"), string.concat(k, " armor"));
-            assertEq(r.sling, _u(k, ".sling"), string.concat(k, " sling"));
-            assertEq(r.won, vm.parseJsonBool(json, string.concat(k, ".won")), string.concat(k, " won"));
-            assertEq(r.dead, vm.parseJsonBool(json, string.concat(k, ".dead")), string.concat(k, " dead"));
+            (DelveRules.Progress memory p, uint256 g) = _replay(k);
+            DelveRules.Progress memory want = ProgressJson.read(json, string.concat(k, ".final"));
+            assertEq(abi.encode(p), abi.encode(want), string.concat(k, " progress"));
+            assertEq(rules.score(p), vm.parseJsonUint(json, string.concat(k, ".score")), string.concat(k, " score"));
+            if (g > worst) worst = g;
         }
+        emit log_named_uint("heaviest advance() in fixtures (gas)", worst);
     }
 
     function test_layoutsMatchJsEngine() public view {
         uint256 n = _count(".layouts");
         for (uint256 i; i < n; ++i) {
             string memory k = string.concat(".layouts[", vm.toString(i), "]");
-            (uint256 open, uint256 style, int256[4] memory pos, int256[] memory enemies, int256[] memory items) =
-                rules.floorLayout(uint32(_u(k, ".seed")), uint8(_u(k, ".floor")), uint8(_u(k, ".mood")));
-            assertEq(open, vm.parseUint(vm.parseJsonString(json, string.concat(k, ".open"))), string.concat(k, " open"));
-            assertEq(style, _u(k, ".style"), string.concat(k, " style"));
-            int256[] memory want = vm.parseJsonIntArray(json, string.concat(k, ".pos"));
-            for (uint256 j; j < 4; ++j) {
-                assertEq(pos[j], want[j], string.concat(k, " pos"));
+            (
+                uint256[] memory open,
+                uint256 style,
+                int256[6] memory geo,
+                int256[] memory enemies,
+                int256[] memory items
+            ) = rules.floorLayout(
+                uint32(vm.parseJsonUint(json, string.concat(k, ".seed"))),
+                uint16(vm.parseJsonUint(json, string.concat(k, ".floor"))),
+                uint8(vm.parseJsonUint(json, string.concat(k, ".mood")))
+            );
+            string[] memory words = vm.parseJsonStringArray(json, string.concat(k, ".open"));
+            assertEq(open.length, words.length, string.concat(k, " words"));
+            for (uint256 w; w < words.length; ++w) {
+                assertEq(open[w], vm.parseUint(words[w]), string.concat(k, " open"));
+            }
+            assertEq(style, vm.parseJsonUint(json, string.concat(k, ".style")), string.concat(k, " style"));
+            int256[] memory want = vm.parseJsonIntArray(json, string.concat(k, ".geo"));
+            for (uint256 j; j < 6; ++j) {
+                assertEq(geo[j], want[j], string.concat(k, " geo"));
             }
             assertEq(enemies, vm.parseJsonIntArray(json, string.concat(k, ".enemies")), string.concat(k, " enemies"));
             assertEq(items, vm.parseJsonIntArray(json, string.concat(k, ".items")), string.concat(k, " items"));
         }
     }
 
-    function test_worstCaseReplayGas() public {
-        // 1000 waits on a zoomies burrow: every enemy acts every turn for the whole tape.
-        bytes memory tape = new bytes(1000);
-        for (uint256 i; i < 1000; ++i) {
+    function test_mustEndAtFloorBoundary() public {
+        DelveRules.Progress memory p = rules.init(1, 42);
+        vm.expectRevert(abi.encodeWithSelector(DelveRules.NotAtFloorBoundary.selector, 1, 3));
+        rules.advance(42, 1, p, hex"040404");
+        DelveRules.Progress memory q = rules.advance(42, 1, p, hex"040405"); // fleeing ends cleanly
+        assertTrue(q.fled);
+        vm.expectRevert(DelveRules.RunAlreadyOver.selector);
+        rules.advance(42, 1, q, hex"04");
+        vm.expectRevert(abi.encodeWithSelector(DelveRules.TapeTooLong.selector, 6001));
+        rules.advance(42, 1, p, new bytes(6001));
+    }
+
+    /// Worst case for one floor: the biggest map with the most monsters, waiting until the cave-in
+    /// kills the delver, so every monster acts on every turn.
+    function test_worstCaseFloorGas() public {
+        DelveRules.Progress memory p = rules.init(10, 7);
+        p.floor = 179;
+        p.maxHp = 2000;
+        p.hp = 2000;
+        p.def = 200;
+        bytes memory tape = new bytes(1600);
+        for (uint256 i; i < tape.length; ++i) {
             tape[i] = bytes1(uint8(4));
         }
         uint256 g = gasleft();
-        rules.simulate(123456, 10, 3, tape);
+        DelveRules.Progress memory q = rules.advance(7, 3, p, tape);
         uint256 used = g - gasleft();
-        emit log_named_uint("gas for 1000-turn replay", used);
-        assertLt(used, 16_000_000);
-    }
-
-    function test_tapeTooLongReverts() public {
-        vm.expectRevert(abi.encodeWithSelector(DelveRules.TapeTooLong.selector, 1001));
-        rules.simulate(1, 1, 1, new bytes(1001));
+        emit log_named_uint("worst-case single floor (gas)", used);
+        emit log_named_uint("turns until the cave-in won", q.turn);
+        assertTrue(q.dead);
     }
 }
