@@ -56,6 +56,9 @@ const SFX = {
   win: () => [523, 659, 784, 1046, 784, 1046].forEach((f, i) => tone(f, 0.12, { delay: i * 0.1 })),
   die: () => [392, 330, 262, 196].forEach((f, i) => tone(f, 0.2, { type: "triangle", delay: i * 0.15 })),
   flee: () => tone(300, 0.25, { type: "triangle", slide: 400 }),
+  shoot: () => { tone(900, 0.05, { type: "triangle", slide: -500, vol: 0.05 }); noise(0.04, 0.03); },
+  chest: () => { tone(240, 0.06, { type: "square", vol: 0.04 }); tone(360, 0.08, { type: "triangle", delay: 0.05 }); },
+  loot: () => [659, 784, 988, 1319].forEach((f, i) => tone(f, 0.09, { type: "square", vol: 0.045, delay: i * 0.07 })),
   ui: () => tone(660, 0.04, { type: "triangle", vol: 0.04 }),
 };
 

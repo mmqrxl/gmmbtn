@@ -28,16 +28,20 @@
       </div>
       <div class="controls">
         <div class="pad">
-          <button class="px-btn" data-act="0" aria-label="Up">▲</button>
-          <button class="px-btn" data-act="3" aria-label="Left">◀</button>
+          <button class="px-btn" data-dir="0" aria-label="Up">▲</button>
+          <button class="px-btn" data-dir="3" aria-label="Left">◀</button>
           <button class="px-btn" data-act="4" aria-label="Wait">·</button>
-          <button class="px-btn" data-act="1" aria-label="Right">▶</button>
-          <button class="px-btn" data-act="2" aria-label="Down">▼</button>
+          <button class="px-btn" data-dir="1" aria-label="Right">▶</button>
+          <button class="px-btn" data-dir="2" aria-label="Down">▼</button>
+          <button class="px-btn aim" id="aimBtn" aria-label="Aim the sling">🎯</button>
         </div>
         <div class="keys">
-          <button id="startBtn" class="px-btn gold">START RUN</button>
-          <p><b>WASD / ARROWS</b> move &amp; attack · <b>SPACE</b> wait · <b>Q</b> flee with your seeds</p>
-          <button class="px-btn tiny" data-act="5">FLEE</button>
+          <div class="row left">
+            <button id="practiceBtn" class="px-btn">PRACTICE RUN</button>
+            <button id="rankedBtn" class="px-btn gold">RANKED RUN</button>
+            <button class="px-btn tiny" data-act="5">FLEE</button>
+          </div>
+          <p><b>WASD / ARROWS</b> move &amp; melee · <b>SHIFT+DIR</b> or <b>IJKL</b> or <b>F</b> then a direction: sling a pebble · <b>SPACE</b> wait · <b>Q</b> flee with your seeds</p>
         </div>
       </div>
     </section>
@@ -59,11 +63,12 @@
       <div class="panel">
         <h3>HOW IT WORKS</h3>
         <ul class="small rules">
-          <li>Five floors of burrow. Grab seeds 🌰, eat cheese 🧀, bump enemies to fight, find the tunnel down. The golden wheel waits on floor 5.</li>
-          <li>Each expedition lasts 2 hours. Its burrow is seeded from SqueekCore's certified ledger, and the hamster's real work in the 6 rounds before it opened sets the mood: 💤 dark and drowsy, 🐾 normal, 🏃 richer seeds, ⚡ more enemies and double seeds.</li>
-          <li>Your Squeek is your delver. Its level sets HP and attack, its onchain art sets your colors.</li>
-          <li>Flee (Q) to keep every seed. Die and you lose half. Win for a big bonus.</li>
-          <li>Practice as much as you like. Each Squeek can submit 3 runs per expedition; the contract replays every move and keeps your best. Ties go to whoever got there first.</li>
+          <li><b>Six floors</b> across three biomes. Every run is a brand-new burrow: caverns, dug-out rooms or warrens, a random start and random loot.</li>
+          <li><b>Fight two ways.</b> Bump to melee. Sling pebbles from range (Shift+direction / IJKL / 🎯). Crits hit double.</li>
+          <li><b>Open chests</b> for gear: Thorn Dagger, Pencil Spear (pierces), Acorn Hammer, Golden Fork; Walnut Helm, Thimble Mail, Chestnut Plate; Rubber Sling, Pea Shooter; plus vitamins, clovers, lucky whiskers and pebble pouches. Worse gear is salvaged for seeds.</li>
+          <li><b>Enemies:</b> beetles, snakes, fast rats (2 steps a turn), tanky slow moles, and the Tabby boss guarding the golden wheel. Each stairway down lets you rest for 25% HP.</li>
+          <li><b>The real hamster</b> sets each 2-hour expedition's mood from his certified work in the 6 rounds before it opened: 💤 dark &amp; drowsy, 🐾 normal, 🏃 richer, ⚡ deadlier but double seeds.</li>
+          <li><b>Ranked runs:</b> your Squeek draws a fresh burrow onchain (3 per expedition), you play, and the contract replays every move to score it. Your Squeek's level sets HP/ATK; its art colors your hero.</li>
         </ul>
       </div>
     </aside>
