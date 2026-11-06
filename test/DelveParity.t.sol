@@ -9,24 +9,42 @@ import {ProgressJson} from "./ProgressJson.sol";
 ///         requires identical results.
 contract DelveParityTest is Test {
     DelveRules rules;
-    string json;
 
     function setUp() public {
         rules = new DelveRules();
-        json = vm.readFile("test/fixtures/parity.json");
     }
 
-    function _count(string memory key) internal view returns (uint256 n) {
+    /// @dev Every cheatcode call copies the whole fixture into fresh memory, so loops rewind the
+    ///      free-memory pointer after each case; otherwise memory grows past the EVM limit.
+    function _mark() internal pure returns (uint256 m) {
+        assembly {
+            m := mload(0x40)
+        }
+    }
+
+    function _rewind(uint256 m) internal pure {
+        assembly {
+            mstore(0x40, m)
+        }
+    }
+
+    function _count(string memory json, string memory key) internal pure returns (uint256 n) {
         while (vm.keyExistsJson(json, string.concat(key, "[", vm.toString(n), "]"))) ++n;
     }
 
-    function _replay(string memory k) internal view returns (DelveRules.Progress memory p, uint256 maxGas) {
+    function _replay(string memory json, string memory k)
+        internal
+        view
+        returns (DelveRules.Progress memory p, uint256 maxGas)
+    {
         uint32 seed = uint32(vm.parseJsonUint(json, string.concat(k, ".seed")));
         uint8 mood = uint8(vm.parseJsonUint(json, string.concat(k, ".mood")));
         uint8 level = uint8(vm.parseJsonUint(json, string.concat(k, ".level")));
-        p = vm.keyExistsJson(json, string.concat(k, ".start.floor"))
-            ? ProgressJson.read(json, string.concat(k, ".start"))
-            : rules.init(level, seed);
+        if (vm.keyExistsJson(json, string.concat(k, ".start.floor"))) {
+            p = ProgressJson.read(json, string.concat(k, ".start"));
+        } else {
+            (p,,) = rules.start(level, seed, vm.parseJsonUint(json, string.concat(k, ".word")));
+        }
         bytes[] memory chunks = vm.parseJsonBytesArray(json, string.concat(k, ".chunks"));
         for (uint256 c; c < chunks.length; ++c) {
             uint256 g = gasleft();
@@ -37,30 +55,66 @@ contract DelveParityTest is Test {
     }
 
     function test_runsMatchJsEngine() public {
-        uint256 n = _count(".cases");
+        string memory json = vm.readFile("test/fixtures/parity.json");
+        uint256 n = _count(json, ".cases");
         assertGt(n, 50);
         uint256 worst;
         for (uint256 i; i < n; ++i) {
+            uint256 m = _mark();
             string memory k = string.concat(".cases[", vm.toString(i), "]");
-            (DelveRules.Progress memory p, uint256 g) = _replay(k);
+            (DelveRules.Progress memory p, uint256 g) = _replay(json, k);
             DelveRules.Progress memory want = ProgressJson.read(json, string.concat(k, ".final"));
             assertEq(abi.encode(p), abi.encode(want), string.concat(k, " progress"));
             assertEq(rules.score(p), vm.parseJsonUint(json, string.concat(k, ".score")), string.concat(k, " score"));
             if (g > worst) worst = g;
+            _rewind(m);
         }
         emit log_named_uint("heaviest advance() in fixtures (gas)", worst);
     }
 
-    function test_layoutsMatchJsEngine() public view {
-        uint256 n = _count(".layouts");
+    /// Starting stats from real Squeek traits (every Epic and Legendary plus a sample).
+    function test_genesMatchJsEngine() public view {
+        string memory json = vm.readFile("test/fixtures/genes.json");
+        uint256 n = _count(json, ".genes");
+        assertGt(n, 500);
         for (uint256 i; i < n; ++i) {
+            uint256 m = _mark();
+            string memory k = string.concat(".genes[", vm.toString(i), "]");
+            uint256 word = vm.parseUint(vm.parseJsonString(json, string.concat(k, ".word")));
+            (int256[11] memory b, uint8 tier, uint8 hand) = rules.genes(word);
+            int256[] memory want = vm.parseJsonIntArray(json, string.concat(k, ".bonus"));
+            for (uint256 j; j < 11; ++j) {
+                assertEq(b[j], want[j], string.concat(k, " bonus"));
+            }
+            assertEq(tier, vm.parseJsonUint(json, string.concat(k, ".tier")), string.concat(k, " tier"));
+            assertEq(hand, vm.parseJsonUint(json, string.concat(k, ".hand")), string.concat(k, " hand"));
+            (DelveRules.Progress memory p,,) = rules.start(
+                uint8(vm.parseJsonUint(json, string.concat(k, ".level"))),
+                uint32(vm.parseJsonUint(json, string.concat(k, ".seed"))),
+                word
+            );
+            assertEq(
+                abi.encode(p),
+                abi.encode(ProgressJson.read(json, string.concat(k, ".start"))),
+                string.concat(k, " start")
+            );
+            _rewind(m);
+        }
+    }
+
+    function test_layoutsMatchJsEngine() public view {
+        string memory json = vm.readFile("test/fixtures/parity.json");
+        uint256 n = _count(json, ".layouts");
+        for (uint256 i; i < n; ++i) {
+            uint256 m = _mark();
             string memory k = string.concat(".layouts[", vm.toString(i), "]");
             (
                 uint256[] memory open,
                 uint256 style,
                 int256[6] memory geo,
                 int256[] memory enemies,
-                int256[] memory items
+                int256[] memory items,
+                bytes memory traps
             ) = rules.floorLayout(
                 uint32(vm.parseJsonUint(json, string.concat(k, ".seed"))),
                 uint16(vm.parseJsonUint(json, string.concat(k, ".floor"))),
@@ -78,6 +132,8 @@ contract DelveParityTest is Test {
             }
             assertEq(enemies, vm.parseJsonIntArray(json, string.concat(k, ".enemies")), string.concat(k, " enemies"));
             assertEq(items, vm.parseJsonIntArray(json, string.concat(k, ".items")), string.concat(k, " items"));
+            assertEq(traps, vm.parseJsonBytes(json, string.concat(k, ".traps")), string.concat(k, " traps"));
+            _rewind(m);
         }
     }
 
